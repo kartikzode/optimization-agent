@@ -40,16 +40,20 @@ def test_shape_labels_use_only_the_varying_keys():
 
 def test_problem_registry_and_peak_kind():
     assert "moe" in problems.list_problems() and problems.has_cost("moe") and problems.peak_kind("moe") == "fp16_tc"
-    assert problems.notes("moe").startswith("# moe")
+    assert problems.notes("moe").startswith("# moe")                # read from knowledge/problems/moe/notes.md
+    assert not (problems.problem_dir("moe") / "notes.md").exists() and not (problems.problem_dir("moe") / "hints.md").exists()
 
 
 def test_scaffold_creates_a_complete_problem(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "PROBLEMS", tmp_path / "problems")
+    monkeypatch.setattr(config, "KNOWLEDGE", tmp_path / "knowledge")
     problems._cost_module.cache_clear()
     dest = problems.scaffold("vecscale")
     names = sorted(p.name for p in dest.iterdir())
-    assert names == ["cost.py", "hints.md", "notes.md", "reference.py", "submission.py", "task.py", "task.yml"]
-    assert "__NAME__" not in "".join(p.read_text() for p in dest.iterdir())
+    assert names == ["cost.py", "reference.py", "submission.py", "task.py", "task.yml"]      # nothing the agents write is in problems/
+    know = config.KNOWLEDGE / "problems" / "vecscale"
+    assert sorted(p.name for p in know.iterdir()) == ["hints.md", "notes.md"]
+    assert "__NAME__" not in "".join(p.read_text() for p in [*dest.iterdir(), *know.iterdir()])
     assert "vecscale" in problems.list_problems()
     task = yaml.safe_load((dest / "task.yml").read_text())
     assert task["tests"] and task["benchmarks"]

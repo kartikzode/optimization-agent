@@ -94,3 +94,25 @@ def test_local_nvcc_rejects_broken_cu_with_the_compiler_message():
 def test_cu_with_torch_includes_is_not_compiled_locally():
     r = pc.precheck({"submission.py": PY, "k.cu": '#include <torch/extension.h>\n__global__ void k() {}'})
     assert r["ok"] and any("need torch headers" in n or "torch headers" in n for n in r["notes"])
+
+
+def test_local_nvcc_uses_an_exact_gencode_so_hopper_only_instructions_compile(monkeypatch):
+    """`-arch=sm_90a` makes nvcc 13 also build a plain compute_90 PTX pass, where ptxas rejects wgmma (blocked r2-w2)."""
+    from agent import compile as cc
+    assert cc.gencode("sm_90a") == "-gencode=arch=compute_90a,code=sm_90a"
+    assert cc.gencode("sm_80") == "-gencode=arch=compute_80,code=sm_80" and cc.gencode("weird") == "-arch=weird"
+    seen = []
+
+    class R:
+        returncode, stdout, stderr = 0, "", ""
+
+    monkeypatch.setattr(cc.shutil, "which", lambda n: "/usr/bin/nvcc")
+    monkeypatch.setattr(cc.subprocess, "run", lambda cmd, **k: seen.append(cmd) or R())
+    cc.local_nvcc({"k.cu": "__global__ void k(){}"}, "sm_90a")
+    assert "-gencode=arch=compute_90a,code=sm_90a" in seen[0] and not any(a.startswith("-arch=") for a in seen[0])
+
+
+@needs_nvcc
+def test_a_wgmma_kernel_passes_the_local_precheck():
+    wgmma = ('__global__ void k(float* x) {\n  asm volatile("wgmma.fence.sync.aligned;\\n" ::: "memory");\n  x[0] = 1.f;\n}\n')
+    assert pc.precheck({"submission.py": PY, "k.cu": wgmma})["ok"]

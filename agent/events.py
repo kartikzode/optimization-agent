@@ -137,16 +137,20 @@ def analyze(events: list[dict], now: float | None = None, stall_s: float = 600.0
     waiting: permission prompts / notifications that nothing has followed since (you may need to answer them)."""
     now = now or time.time()
     started: dict[str, dict] = {}
+    ended: set[str] = set()
     beats: dict[str, dict] = {}
     for r in events:
         k, op = r.get("kind"), r.get("op")
         if k == "op_start" and op:
             started[op] = r
         elif k == "op_end" and op:
-            started.pop(op, None)
-            started.pop("perm-" + op, None)
+            ended.add(op)          # order-insensitive: async hooks may write an end before its start
         elif k in ("op_heartbeat", "phase") and op:
             beats.setdefault(op, {}).update(ts=r["ts"], phase=r.get("phase", beats.get(op, {}).get("phase", "")))
+    for op in list(started):
+        if op in ended or (op.startswith("perm-") and op[5:] in ended):
+            del started[op]
+    silence_since = max((r["ts"] for r in events), default=0)    # most recent event of any kind
     open_ops = []
     for op, r in started.items():
         age = now - r["ts"]
@@ -158,7 +162,14 @@ def analyze(events: list[dict], now: float | None = None, stall_s: float = 600.0
         elif r.get("src") == "optk" and age > 120 and quiet > 180:
             verdict = "stalled"        # an optk process heartbeats every 60 s: silence means it is hung
         elif r.get("src") == "hook" and age > stall_s:
-            verdict = "stalled"
+            name, detail = str(r.get("name", "")), str(r.get("detail", ""))
+            if name in ("tool:Agent", "tool:Task", "tool:SubagentHandback"):
+                # a foreground sub-agent call is long by nature: stalled only if the whole system has gone quiet
+                verdict = "stalled" if now - silence_since > stall_s else "running"
+            elif "./optk" in detail and name == "tool:Bash":
+                verdict = "running"     # the optk process it launched heartbeats and is judged on its own
+            else:
+                verdict = "stalled"
         open_ops.append({**r, "age": age, "phase": b.get("phase", ""), "quiet": quiet, "verdict": verdict})
     open_ops.sort(key=lambda x: -x["age"])
 

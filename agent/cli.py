@@ -124,7 +124,8 @@ def cmd_problems(a) -> int:
 def cmd_new_problem(a) -> int:
     dest = problems.scaffold(a.name)
     print(f"created {dest}\nfill in: task.yml, task.py, reference.py (generate_input, ref_kernel, tolerance), submission.py (baseline),"
-          f"\ncost.py (FLOPs and minimum bytes), notes.md, hints.md. Then: ./optk submit --seed --problem {a.name}")
+          f"\ncost.py (FLOPs and minimum bytes). Also created knowledge/problems/{a.name}/ (notes.md, hints.md: what is known, first ideas)."
+          f"\nThen: ./optk submit --seed --problem {a.name}")
     return 0
 
 

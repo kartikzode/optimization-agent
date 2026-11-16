@@ -81,6 +81,13 @@ def format_resources(res: list[dict]) -> str:
     return "\n".join(rows)
 
 
+def gencode(arch: str) -> str:
+    """`sm_90a` -> `-gencode=arch=compute_90a,code=sm_90a`. The `-arch=sm_90a` shorthand also embeds a plain compute_90 PTX
+    pass in nvcc 13, and ptxas rejects wgmma/TMA-only instructions there, which blocked every Hopper-specific kernel."""
+    m = re.fullmatch(r"sm_(\d+a?)", arch)
+    return f"-gencode=arch=compute_{m.group(1)},code=sm_{m.group(1)}" if m else f"-arch={arch}"
+
+
 def local_nvcc(files: dict[str, str], arch: str, timeout: int = 240) -> dict:
     """nvcc every torch-free .cu file. -> {ran, ok, skipped: [names], log, resources}"""
     nvcc = shutil.which("nvcc")
@@ -98,11 +105,11 @@ def local_nvcc(files: dict[str, str], arch: str, timeout: int = 240) -> dict:
             p.parent.mkdir(parents=True, exist_ok=True)
             p.write_text(text)
         for rel in todo:
-            cmd = [nvcc, f"-arch={arch}", *NVCC_FLAGS, f"-I{d}", "-c", str(Path(d, rel)), "-o", str(Path(d, rel + ".o"))]
+            cmd = [nvcc, gencode(arch), *NVCC_FLAGS, f"-I{d}", "-c", str(Path(d, rel)), "-o", str(Path(d, rel + ".o"))]
             t0 = time.time()
             try:
                 r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, cwd=d)
-                logs.append(f"$ {' '.join(cmd[:1] + cmd[1:-3])} {rel}  (exit {r.returncode}, {time.time() - t0:.1f}s)\n"
+                logs.append(f"$ {' '.join(cmd[:-3])} {rel}  (exit {r.returncode}, {time.time() - t0:.1f}s)\n"
                             f"{r.stdout}{r.stderr}")
                 ok &= r.returncode == 0
             except subprocess.TimeoutExpired:

@@ -78,7 +78,7 @@ def precheck(files: dict[str, str] | str, *, use_godbolt: bool = False, arch: st
         if r["ran"]:
             resources = r["resources"]
             if not r["ok"]:
-                return {"ok": False, "stage": "nvcc", "errors": [f"nvcc (local, -arch={arch}) failed:\n{cc.condense(r['log'])}"],
+                return {"ok": False, "stage": "nvcc", "errors": [f"nvcc (local, {cc.gencode(arch)}) failed:\n{cc.condense(r['log'])}"],
                         "notes": notes, "resources": resources}
             notes.append(f"nvcc (local, {arch}) compiled: {', '.join(n for n in cu if n not in r['skipped'])}")
         if r["skipped"]:

@@ -82,3 +82,12 @@ def test_read_reports_pages_and_truncates(kbdir, capsys):
     assert "smem page 1/" in out and "32 banks" in out
     with pytest.raises(SystemExit, match="unknown document"):
         kb.main(["read", "nope"])
+
+
+def test_problem_knowledge_files_get_problem_prefixed_slugs(kbdir):
+    for name in ("moe", "softmax"):
+        d = kbdir / "problems" / name
+        d.mkdir(parents=True)
+        (d / "notes.md").write_text(f"# {name}: what we know\n\nfusing the epilogue helps {name}.")
+    slugs = sorted(d["slug"] for d in kb.ingest(log=lambda *_: None))
+    assert "moe-notes" in slugs and "softmax-notes" in slugs and "notes" not in slugs

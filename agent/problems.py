@@ -2,7 +2,9 @@
 Problem registry: what lives in problems/<name>/, its cost model, and scaffolding for new ones.
 
 A problem directory needs reference.py, task.py, task.yml and submission.py (the baseline).
-Optional: cost.py (roofline model), notes.md (what is known about it; read it before optimizing).
+Optional: cost.py (roofline model).
+What is KNOWN about a problem (notes.md, hints.md) lives in knowledge/problems/<name>/, not here: agents may edit the
+knowledge directory but never problems/ (the evaluator, references and baselines).
 
     cost.py:   PEAK = "fp16_tc"                       # which compute peak the roofline uses
                def cost(spec: dict) -> (flops, min_bytes)   # algorithmic work + minimum HBM traffic
@@ -88,8 +90,12 @@ def peak_kind(problem: str) -> str:
     return getattr(mod, "PEAK", "fp16_tc") if mod else "fp16_tc"
 
 
+def knowledge_dir(problem: str) -> Path:
+    return config.KNOWLEDGE / "problems" / problem
+
+
 def notes(problem: str) -> str:
-    p = problem_dir(problem) / "notes.md"
+    p = knowledge_dir(problem) / "notes.md"
     return p.read_text() if p.exists() else ""
 
 
@@ -97,11 +103,13 @@ def scaffold(name: str) -> Path:
     """Copy templates/problem into problems/<name>. Everything in it is a stub to fill in."""
     if not NAME_RE.match(name):
         raise SystemExit("problem names are lowercase letters, digits and underscores, starting with a letter")
-    dest = problem_dir(name)
-    if dest.exists():
-        raise SystemExit(f"{dest} already exists")
+    dest, know = problem_dir(name), knowledge_dir(name)
+    if dest.exists() or know.exists():
+        raise SystemExit(f"{dest if dest.exists() else know} already exists")
     shutil.copytree(config.TEMPLATES / "problem", dest)
-    for f in dest.rglob("*"):
-        if f.is_file():
-            f.write_text(f.read_text().replace("__NAME__", name))
+    shutil.copytree(config.TEMPLATES / "knowledge_problem", know)      # notes.md, hints.md
+    for d in (dest, know):
+        for f in d.rglob("*"):
+            if f.is_file():
+                f.write_text(f.read_text().replace("__NAME__", name))
     return dest

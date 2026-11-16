@@ -148,3 +148,45 @@ def test_where_reports_stalled_dead_and_waiting_with_a_verdict(capsys):
 def test_where_with_no_events_explains_how_logging_starts(capsys):
     cli.main(["where"])
     assert "no events" in capsys.readouterr().out
+
+
+def test_an_end_written_before_its_start_does_not_leave_a_phantom_operation():
+    # async hooks race: for an instant tool call the end-hook process can write before the start-hook process
+    now = 10_000.0
+    ev = [{"ts": now - 100.0, "t": "", "kind": "op_end", "op": "T1", "name": "tool:Agent", "status": "ok"},
+          {"ts": now - 99.5, "t": "", "kind": "op_start", "op": "T1", "name": "tool:Agent", "src": "hook", "agent": "main"}]
+    assert events.analyze(ev, now)["open"] == []
+
+
+def test_a_long_foreground_agent_call_is_not_stalled_while_the_system_is_active():
+    now = 10_000.0
+    ev = [start("A", "tool:Agent", now - 3000, src="hook", agent="main", detail="kernel-worker: try X"),
+          {"ts": now - 5, "t": "", "kind": "op_start", "op": "B", "name": "tool:Bash", "src": "hook", "agent": "kernel-worker:a1"}]
+    by = {o["op"]: o for o in events.analyze(ev, now, stall_s=600)["open"]}
+    assert by["A"]["verdict"] == "running"                        # the sub-agent is clearly working
+    quiet = events.analyze(ev[:1], now, stall_s=600)["open"][0]
+    assert quiet["verdict"] == "stalled"                          # nothing at all for 50 minutes
+
+
+def test_a_bash_call_that_runs_optk_is_judged_by_the_optk_heartbeat_not_its_age():
+    now = 10_000.0
+    ev = [start("A", "tool:Bash", now - 3000, src="hook", agent="modal-runner:x", detail="./optk submit d --problem moe")]
+    assert events.analyze(ev, now, stall_s=600)["open"][0]["verdict"] == "running"
+    ev = [start("A", "tool:Bash", now - 3000, src="hook", agent="w:x", detail="sleep 99999")]
+    assert events.analyze(ev, now, stall_s=600)["open"][0]["verdict"] == "stalled"
+
+
+def test_stop_hooks_record_the_last_message_and_the_agent_transcript_path():
+    hooklog.handle("substop", {"agent_type": "kernel-worker", "agent_id": "b7e2aa10ff", "agent_transcript_path": "/t/agent-b7e2.jsonl",
+                               "last_assistant_message": "READY: /ws/r1-w1\n  changed X"})
+    hooklog.handle("stop", {"last_assistant_message": "Round 1 done"})
+    hooklog.handle("substart", {"agent_id": "zz9999aa"})                      # an unnamed agent
+    a, b, c = events.read()
+    assert a["transcript"] == "/t/agent-b7e2.jsonl" and a["last"] == "READY: /ws/r1-w1 changed X"
+    assert b["last"] == "Round 1 done" and c["agent"] == "agent:zz9999"
+
+
+def test_tool_calls_do_not_write_redundant_permission_ends():
+    hooklog.handle("pre", {"tool_name": "Edit", "tool_use_id": "E1", "tool_input": {"file_path": "/a"}})
+    hooklog.handle("post", {"tool_name": "Edit", "tool_use_id": "E1"})
+    assert [r["kind"] for r in events.read()] == ["op_start", "op_end"]
