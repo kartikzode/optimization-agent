@@ -3,7 +3,11 @@
     "allow": [
       "Bash(./optk:*)",
       "Edit(/workspace/**)",
-      "Write(/workspace/**)"
+      "Write(/workspace/**)",
+      "Edit(/knowledge/problems/**)"
+    ],
+    "deny": [
+      "Edit(/problems/**)"
     ]
   },
   "hooks": {

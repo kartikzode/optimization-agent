@@ -49,6 +49,8 @@ def sources() -> list[Path]:
 
 def _slug_for(p: Path, taken: set[str]) -> str:
     s = slugify(p.stem)
+    if "problems" in p.relative_to(KB).parts[:-2] + p.relative_to(KB).parts[:1]:      # knowledge/problems/<name>/notes.md -> moe-notes
+        s = slugify(f"{p.parent.name}-{p.stem}")
     if s in taken:
         s = slugify(f"{p.parent.name}-{p.stem}")
     taken.add(s)

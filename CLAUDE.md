@@ -20,7 +20,7 @@ Working alone (no sub-agents) is fine for small steps: you then do all three rol
 
 ## Hard rules
 
-1. **Never edit `problems/` (except a new problem you were asked to create), `harness/`, `agent/`, `dashboard/` while optimizing.** Candidates live only in `workspace/runs/<run>/scratch/<name>/`.
+1. **Never edit `problems/` (the evaluator, reference, task.yml, baseline), `harness/`, `agent/`, `dashboard/` while optimizing.** `problems/` is read-only for agents (enforced in `.claude/settings.json`); the problem knowledge files live in `knowledge/problems/<p>/` (`notes.md`, `hints.md`), which you should keep current. Candidates live only in `workspace/runs/<run>/scratch/<name>/`. A tool bug is not yours to patch: report it (as the runner did for the nvcc issue) and let the maintainer fix it.
 2. **No cheating.** The guard rejects: importing `reference`/`eval`/`utils`, subprocess/threads/files/env access, side CUDA streams, monkeypatching torch/time/sys, and in `.cu`: `cudaStreamCreate*`, host callbacks, threads, `system/popen/dlopen`, `getenv`, file I/O. Caching outputs across calls, hard-coding shapes/seeds, skipping work the reference does: all invalid, and fresh seeds expose them. A speedup that does not survive "is the same work being done?" is not a result.
 3. **CUDA is the target.** `.cu` files with a thin `submission.py` wrapper (template below). Triton/torch-only candidates are allowed for a quick experiment but the goal is hand-written CUDA.
 4. **Precision follows the reference**: tolerance is in `problems/<p>/reference.py` (`rtol/atol`). fp32 accumulation for fp16/bf16 inputs. Do not loosen anything to "win".
@@ -33,7 +33,7 @@ Working alone (no sub-agents) is fine for small steps: you then do all three rol
 
     ./optk doctor                              Modal creds, local nvcc, problems, knowledge base
     ./optk problems                            problems and their run status
-    ./optk new-problem NAME                    scaffold problems/NAME (reference, task.yml, cost.py, notes.md, hints.md)
+    ./optk new-problem NAME                    scaffold problems/NAME (reference, task.yml, cost.py) + knowledge/problems/NAME (notes.md, hints.md)
     ./optk submit --seed --problem P           evaluate the baseline submission.py: iteration #1, the speedup reference
     ./optk new-kernel --problem P --name W1 [--from-candidate N | --from-best | --template cuda|baseline]
                                                scratch dir with the files + candidate.json (parent, worker, strategy, hypothesis)
@@ -132,8 +132,8 @@ pass fails, you still get totals and a torch-profiler table. `--ncu-set full` ad
 ## Multiple problems
 
 `problems/<name>/` = `reference.py` (`generate_input`, `ref_kernel`, `check_implementation`), `task.py`, `task.yml` (tests, benchmarks, timeouts), `submission.py` (baseline), plus
-`cost.py` (FLOPs and minimum bytes per shape: powers the roofline), `notes.md` (what we know), `hints.md` (first ideas). `./optk new-problem NAME` scaffolds all of it.
-Each problem gets its own run (`workspace/runs/<name>`), seed, journal and dashboard entry. Read the problem's `notes.md` before working on it, and update it when you learn something specific.
+`cost.py` (FLOPs and minimum bytes per shape: powers the roofline). What we *know* lives separately in `knowledge/problems/<name>/`: `notes.md` (what we know), `hints.md` (first ideas). `./optk new-problem NAME` scaffolds both.
+Each problem gets its own run (`workspace/runs/<name>`), seed, journal and dashboard entry. Read `knowledge/problems/<p>/notes.md` before working on a problem, and update it when you learn something specific.
 
 ## Knowledge base
 
@@ -154,6 +154,9 @@ Entries are short, concrete and sourced. Do not add speculation to *Verified*.
 
 - [infra] Nsight Compute works on Modal H100 containers but needs `--clock-control none`; `--set full` is >100 MB per 40 kernels, so the default is the `detailed` set plus a light pass for exact totals. A detailed pass capped at N launches silently under-counts DRAM bytes: for the MoE baseline (346 launches in the call, 40 profiled) the measured intensity read 2311 FLOP/B instead of the true 296, an 8x error. Always check `truncated`/`detailed_launches` in the brief.
 - [moe #1 baseline] The baseline is **host-bound**: 6.54 s per call at seqlen 8192, but its 346 GPU kernels add up to only ~9.7 ms under ncu (GPU busy ~0.1%). 91% of the CPU time is `aten::uniform_`: it builds `nn.Module`s with random-initialised `nn.Linear` weights on every call (the reference does this too, and the timed call includes it). Its GEMMs are already cuBLAS `nvjet_*` kernels at ~92% SM and ~97% tensor-pipe (213 KB smem, 168 regs/thread), so the first win is *not* a better GEMM: delete the per-call construction and the Python loop over experts. It also moves 12.19 GB through DRAM against a 3.14 GB minimum (3.9x), so fusion/reuse is the second win. Read this off any brief: "host-bound" line, then "DRAM traffic ... x the minimum". (`workspace/runs/moe/candidates/0001/brief.md`)
+
+- [moe #2] Delete per-call setup: no `nn.Module`/`nn.Linear`/`nn.Parameter` construction, weights from `data` used directly with `x @ W`, reference loop otherwise unchanged -> 6.61 s to 7.33 ms (901x; 5.80 ms @2048, 9.27 ms @8192), ncu kernel time 9.26 ms of 9.27 ms, so the call is GPU-bound afterwards. When a brief says host-bound, this is the whole win; do it before anything else. What remains at 8192: cuBLAS GEMMs ~60% (compute-bound, 76-91% SM), gather/index_add/elementwise glue ~35% over 314 launches. (`workspace/runs/moe/candidates/0002/brief.md`)
+- [moe #3] One grouped GEMM launch instead of a per-expert loop (device-side counting sort by expert, upper-bound grid with early exit, shared expert as one more group, fused `silu(gate)*up` epilogue, per-(token, slot) output buffer + combine instead of scatter-add; `mma.sync` fp16, fp32 accumulators; no host sync) -> 314 launches to 7, seqlen 2048 from 5.80 to 3.19 ms (1.8x). The small shape (256 tokens/expert) is launch- and glue-bound under cuBLAS, so fusion pays there even with a plain `mma.sync` kernel. Passed all tests on its first GPU run. (`workspace/runs/moe/candidates/0003/brief.md`)
 
 ## Candidates (from the literature, not yet measured here)
 
@@ -187,4 +190,7 @@ Entries are short, concrete and sourced. Do not add speculation to *Verified*.
 
 ## Refuted / pitfalls
 
-- (none yet) Add: what was tried, the evidence, and why it did not work.
+- [moe #3] Pitfall: a 2D grid `dim3(rowTiles, colTiles)` with `rt = blockIdx.x` schedules row tiles fastest, so the CTAs running together are different row tiles (here: different experts) of one column tile and share neither A nor B. Each A tile is then re-read from HBM once per column tile: 27.7 GB of DRAM traffic (8.8x the minimum), L2 hit 42%, measured intensity 130 FLOP/B, both GEMMs memory-bound at 52-60% tensor pipe, and seqlen 8192 at 12.11 ms was slower than cuBLAS-in-a-loop (9.27 ms, #2). Signature to look for: "DRAM traffic Nx the minimum" with N close to the number of column tiles. Decide the CTA order on purpose. (`workspace/runs/moe/candidates/0003/brief.md`)
+- [moe #4] Fixing that order alone (1D grid, `rt = lin / NCT`, `ct = lin % NCT`: group -> row tile -> column tile) cut DRAM traffic 27.7 -> 16.1 GB (-42%), raised L2 hit 42 -> 60% and measured intensity 130 -> 224 FLOP/B, but latency moved 6.21 -> 6.06 ms (8192: 12.11 ± 0.74 -> 11.64 ± 0.69 ms), which is inside the noise. Lesson: ncu's "memory-bound" label on a kernel with tensor pipe ~60% and DRAM throughput well under 100% does not mean HBM is the limiter; when traffic drops 42% and time does not, the inner loop is (here `mma.sync` + `ldmatrix` at 25% occupancy; cuBLAS's wgmma kernels do the same GEMMs at 76-91% SM). Check DRAM throughput %, not only the label, before spending a round on traffic. (`workspace/runs/moe/candidates/0004/brief.md`)
+- [infra, moe #5] FIXED: any `.cu` using `wgmma` was rejected by the submit precheck because `nvcc -arch=sm_90a` (nvcc 13) also compiles a plain `compute_90` pass where ptxas rejects `wgmma.mma_async`. `agent/compile.py:local_nvcc` now passes `-gencode=arch=compute_90a,code=sm_90a`; WGMMA/TMA candidates pass the precheck. Lesson: never use the `-arch=sm_XXa` shorthand for Hopper-only code. (`workspace/runs/moe/candidates/0005/logs/precheck.json` shows the old failure.)
+- Add: what was tried, the evidence, and why it did not work.

@@ -11,7 +11,7 @@ Read `CLAUDE.md` first if you have not this session: rules, commands, how to rea
 ## 0. Setup (once)
 1. `./optk doctor` must be clean. `./optk status --problem <p>`.
 2. No baseline yet? `./optk submit --seed --problem <p>` (a few minutes; it is iteration #1 and the speedup reference). Read its brief.
-3. Read `problems/<p>/notes.md`, `hints.md`, `reference.py`, `task.yml`, `cost.py`. Open the dashboard if the user wants it: `.venv/bin/python -m dashboard.serve`.
+3. Read `knowledge/problems/<p>/notes.md` and `hints.md`, then `problems/<p>/reference.py`, `task.yml`, `cost.py`. Open the dashboard if the user wants it: `.venv/bin/python -m dashboard.serve`.
 
 ## 1. Each round
 **Diagnose.** `./optk status` (shows the latest notes), `./optk notes`, `./optk journal`, the brief of the best and of the last few iterations. State in two or three sentences: where the time goes (top kernel, bound, measured vs algorithmic arithmetic intensity, % of roof), and the biggest gap to close. Search the knowledge base (`./optk kb search`) when a decision depends on hardware detail.
@@ -31,7 +31,7 @@ Keep each worker's agent id: you need it to reply.
 
 **Learn.** For every finished candidate compare with its parent (`./optk compare A B`, the brief's "what changed" section). Decide: keep (new parent), drop, or follow up. Be honest about noise: a gain smaller than the reported std is not a gain.
 - **Record your understanding** before moving on: `./optk note "..." --kind insight|decision|dead-end --cand <ids>` (why the result happened, what the profile implies, why you chose the next step). Also note the plan at the start of each round (`--kind plan`). After a context compaction, `./optk notes` + `./optk status` are how you recover your own reasoning.
-- If something general was learned, **edit `CLAUDE.md`'s playbook now**: *Verified here* (measured win, with the iteration), *Refuted / pitfalls* (with evidence). Update `problems/<p>/notes.md` with problem-specific findings.
+- If something general was learned, **edit `CLAUDE.md`'s playbook now**: *Verified here* (measured win, with the iteration), *Refuted / pitfalls* (with evidence). Update `knowledge/problems/<p>/notes.md` with problem-specific findings.
 - One short status message to the user per round: best latency and speedup, % of roofline, what was tried, what is next.
 
 ## 2. Stopping

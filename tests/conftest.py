@@ -117,3 +117,10 @@ def runs_dir(tmp_path, monkeypatch):
     d = tmp_path / "runs"
     monkeypatch.setattr(config, "RUNS", d)
     return d
+
+
+@pytest.fixture(autouse=True)
+def isolated_event_log(tmp_path_factory, monkeypatch):
+    """Tests run real ./optk commands: keep their events out of the real workspace/events.jsonl."""
+    from agent import events
+    monkeypatch.setattr(events, "LOG", tmp_path_factory.mktemp("events") / "events.jsonl")

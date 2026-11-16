@@ -13,7 +13,7 @@ Claude Code is the optimizer; in multi-agent mode a Fable 5.2 orchestrator direc
     .claude/       agents/kernel-worker.md, agents/modal-runner.md (Sonnet 5.5), skills/optimize (the orchestrator playbook)
     problems/      task definitions and the trusted evaluator (candidates must not edit these)
       eval.py        test / benchmark / profile driver; reports key: value lines on fd $EVAL_FD
-      <name>/        reference.py, task.py, task.yml, submission.py (baseline), cost.py (roofline), notes.md, hints.md
+      <name>/        reference.py, task.py, task.yml, submission.py (baseline), cost.py (roofline); read-only for agents
     templates/     cuda/ (kernel skeleton), problem/ (scaffold for ./optk new-problem)
     agent/         the tools behind ./optk: store, precheck + guard, compile, pipeline, briefs, roofline, knowledge base
     harness/       Modal side: one GPU container runs test -> benchmark (no profiler) -> Nsight Compute; CPU container compiles
