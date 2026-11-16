@@ -1,0 +1,32 @@
+# name: __NAME__
+# NOTE: spec keys are letters only (no underscores or digits): eval.py parses them with [a-zA-Z]+
+
+files:
+  - {"name": "submission.py", "source": "@SUBMISSION@"}
+  - {"name": "task.py", "source": "task.py"}
+  - {"name": "utils.py", "source": "../utils.py"}
+  - {"name": "reference.py", "source": "reference.py"}
+  - {"name": "eval.py", "source": "../eval.py"}
+
+lang: "py"
+
+description: |
+  TODO: one paragraph on what the kernel computes, the input `data` and the expected output.
+
+config:
+  main: "eval.py"
+
+test_timeout: 540
+benchmark_timeout: 540
+ranked_timeout: 840
+ranking_by: "geom"
+
+# correctness cases: small and varied, including awkward sizes
+tests:
+  - {"size": 1024, "seed": 1}
+  - {"size": 4097, "seed": 2}
+
+# benchmark cases: the shapes that decide the score; the LAST one is what Nsight Compute profiles by default
+benchmarks:
+  - {"size": 1048576, "seed": 11}
+  - {"size": 67108864, "seed": 12}

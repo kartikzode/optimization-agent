@@ -1,0 +1,5 @@
+modal
+pyyaml
+python-dotenv
+pypdf
+pytest

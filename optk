@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+# Short entry point for Claude Code and humans:  ./optk <command> ...   (see ./optk --help)
+cd "$(dirname "$0")" || exit 1
+if [ -x .venv/bin/python ]; then exec .venv/bin/python -m agent "$@"; else exec python3 -m agent "$@"; fi

@@ -1,0 +1,843 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Kernel optimization dashboard</title>
+<style>
+:root {
+  color-scheme: light;
+  --page: #f9f9f7; --surface: #fcfcfb; --ink: #0b0b0b; --ink-2: #52514e; --muted: #898781;
+  --grid: #e1e0d9; --axis: #c3c2b7; --border: rgba(11,11,11,.10);
+  --s1: #2a78d6; --s2: #d9822b; --s3: #1a9f8f; --s4: #8a63d2;
+  --meter-track: #cde2fb; --wash: rgba(11,11,11,.045);
+  --good: #0ca30c; --good-text: #006300; --warning: #fab219; --serious: #ec835a; --critical: #d03b3b;
+  --hover: rgba(11,11,11,.05);
+}
+@media (prefers-color-scheme: dark) {
+  :root:where(:not([data-theme="light"])) {
+    color-scheme: dark;
+    --page: #0d0d0d; --surface: #1a1a19; --ink: #f0efec; --ink-2: #c3c2b7; --muted: #898781;
+    --grid: #2c2c2a; --axis: #383835; --border: rgba(255,255,255,.10);
+    --s1: #3987e5; --s2: #f0983f; --s3: #35b9a8; --s4: #a58be6;
+    --meter-track: #0d366b; --wash: rgba(255,255,255,.05); --good-text: #0ca30c;
+    --hover: rgba(255,255,255,.06);
+  }
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --page: #0d0d0d; --surface: #1a1a19; --ink: #f0efec; --ink-2: #c3c2b7; --muted: #898781;
+  --grid: #2c2c2a; --axis: #383835; --border: rgba(255,255,255,.10);
+  --s1: #3987e5; --s2: #f0983f; --s3: #35b9a8; --s4: #a58be6;
+  --meter-track: #0d366b; --wash: rgba(255,255,255,.05); --good-text: #0ca30c;
+  --hover: rgba(255,255,255,.06);
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--page); color: var(--ink);
+  font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
+button, select { font: inherit; color: inherit; }
+.wrap { max-width: 1280px; margin: 0 auto; padding: 20px 24px 64px; }
+.mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+
+.banner { background: color-mix(in srgb, var(--warning) 22%, var(--surface)); border: 1px solid var(--border);
+  border-radius: 8px; padding: 8px 12px; margin-bottom: 14px; font-weight: 600; }
+header.top { display: flex; flex-wrap: wrap; align-items: center; gap: 12px 20px; margin-bottom: 18px; }
+header.top h1 { font-size: 18px; margin: 0; font-weight: 650; }
+header.top .sub { color: var(--ink-2); }
+.filters { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 16px; margin-left: auto; }
+.filters label { color: var(--ink-2); display: inline-flex; gap: 6px; align-items: center; }
+select, .btn { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 5px 10px; cursor: pointer; }
+.btn:hover, select:hover { background: var(--hover); }
+:focus-visible { outline: 2px solid var(--s1); outline-offset: 2px; }
+.live { color: var(--muted); font-size: 12px; }
+
+.kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 12px; margin-bottom: 14px; }
+.tile, .card { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 16px 18px; }
+.tile .lbl { color: var(--ink-2); }
+.tile .val { font-size: 28px; font-weight: 650; line-height: 1.15; margin-top: 4px; }
+.tile .note { color: var(--muted); font-size: 12px; margin-top: 4px; }
+.tile.hero { grid-column: span 2; }
+.tile.hero .val { font-size: 56px; letter-spacing: -.01em; }
+@media (max-width: 640px) { .tile.hero { grid-column: span 1; } }
+
+.card { margin-bottom: 14px; }
+.card-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 14px; }
+.card-head .ctl { margin-left: auto; }
+.card h2 { font-size: 15px; margin: 0; font-weight: 650; }
+.card .desc { color: var(--ink-2); margin: 2px 0 10px; font-size: 13px; max-width: 90ch; }
+.row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 14px; margin-bottom: 14px; }
+@media (max-width: 980px) { .row { grid-template-columns: 1fr; } }
+.row .card { margin-bottom: 0; }
+.viz { position: relative; width: 100%; }
+.legend { display: flex; flex-wrap: wrap; gap: 6px 16px; margin-top: 8px; color: var(--ink-2); font-size: 12px; }
+.legend span { display: inline-flex; align-items: center; gap: 6px; }
+.empty { color: var(--muted); padding: 28px 0; text-align: center; }
+
+svg.chart { display: block; max-width: 100%; height: auto; overflow: visible; }
+svg .grid { stroke: var(--grid); stroke-width: 1; }
+svg .axis { stroke: var(--axis); stroke-width: 1; }
+svg .tick, svg .lbl { fill: var(--muted); font-size: 11px; }
+svg .lbl-ink { fill: var(--ink); font-size: 12px; font-weight: 600; }
+svg .lbl-2 { fill: var(--ink-2); font-size: 12px; }
+svg .best-line { stroke: var(--s1); stroke-width: 2; fill: none; stroke-linejoin: round; stroke-linecap: round; }
+svg .ring { stroke: var(--surface); stroke-width: 2; }
+svg .dot-mute { fill: var(--muted); }
+svg .dot-best { fill: var(--s1); }
+svg .dia { fill: var(--ink-2); }
+svg .cross { stroke: var(--ink-2); stroke-width: 1; }
+svg .roof { stroke: var(--ink); stroke-width: 2; fill: none; stroke-linejoin: round; }
+svg .roof-wash { fill: var(--wash); }
+svg .gap { stroke: var(--axis); stroke-width: 1; }
+svg .ref { stroke: var(--ink-2); stroke-width: 1.5; stroke-dasharray: 5 4; fill: none; }
+svg .ref-soft { stroke: var(--muted); stroke-width: 1; stroke-dasharray: 2 4; fill: none; }
+svg .hit { fill: transparent; cursor: pointer; }
+svg .arrow { fill: var(--s1); }
+svg .traj { stroke: var(--s1); stroke-width: 2; fill: none; }
+.l-s1 { stroke: var(--s1); } .l-s2 { stroke: var(--s2); } .l-s3 { stroke: var(--s3); } .l-s4 { stroke: var(--s4); }
+.l-s1, .l-s2, .l-s3, .l-s4 { stroke-width: 2; fill: none; stroke-linejoin: round; stroke-linecap: round; }
+.d-s1 { fill: var(--s1); } .d-s2 { fill: var(--s2); } .d-s3 { fill: var(--s3); } .d-s4 { fill: var(--s4); }
+.g-fail { stroke: var(--critical); stroke-width: 2; fill: none; stroke-linecap: round; }
+.g-crash, .g-timeout { fill: var(--serious); }
+.g-rejected { fill: var(--warning); }
+.g-infra, .g-running { stroke: var(--muted); stroke-width: 2; fill: none; stroke-dasharray: 3 2; }
+.g-pass { stroke: var(--good-text); stroke-width: 2; fill: none; stroke-linecap: round; stroke-linejoin: round; }
+
+#tip { position: fixed; z-index: 50; pointer-events: none; background: var(--surface); border: 1px solid var(--border);
+  border-radius: 8px; padding: 8px 10px; box-shadow: 0 6px 20px rgba(0,0,0,.18); max-width: 340px; display: none; }
+#tip .th { color: var(--ink-2); font-size: 12px; }
+#tip .tv { font-size: 18px; font-weight: 650; margin: 2px 0; }
+#tip .tv small { font-size: 12px; font-weight: 400; color: var(--ink-2); margin-left: 6px; }
+#tip .ts { color: var(--ink-2); font-size: 12px; }
+
+.bars { display: grid; gap: 10px; }
+.bar-row { display: grid; grid-template-columns: minmax(0, 1fr) 54px; gap: 4px 10px; align-items: center; }
+.bar-row .nm { grid-column: 1 / -1; color: var(--ink-2); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.meter { height: 8px; border-radius: 4px; background: var(--meter-track); overflow: hidden; }
+.meter > i { display: block; height: 100%; background: var(--s1); border-radius: 4px; }
+.bar-row .v { text-align: right; font-weight: 600; font-size: 12px; font-variant-numeric: tabular-nums; }
+
+.blk-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 10px 16px; margin-bottom: 12px; }
+.blk-head .ctl { margin-left: auto; display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+.seg { display: inline-flex; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+.seg button { background: transparent; border: 0; padding: 5px 11px; cursor: pointer; color: var(--ink-2); }
+.seg button + button { border-left: 1px solid var(--border); }
+.seg button:hover { background: var(--hover); }
+.seg button[aria-pressed="true"] { background: var(--hover); color: var(--ink); font-weight: 650; }
+#blocks { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 12px; }
+.blk { text-align: left; background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 12px 14px;
+  cursor: pointer; display: flex; flex-direction: column; gap: 8px; min-height: 176px; position: relative; }
+.blk:hover { background: var(--hover); }
+.blk.is-best { border-color: var(--s1); box-shadow: inset 0 0 0 1px var(--s1); }
+.blk-top { display: flex; align-items: center; gap: 8px; }
+.blk-id { font-weight: 650; }
+.chip { color: var(--ink-2); font-size: 12px; border: 1px solid var(--border); border-radius: 999px; padding: 0 8px; }
+.badge { margin-left: auto; display: inline-flex; align-items: center; gap: 5px; font-size: 12px; color: var(--ink); }
+.blk-main { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+.blk-x { font-size: 26px; font-weight: 650; line-height: 1.1; }
+.blk-t { color: var(--ink-2); }
+.blk-d { color: var(--ink-2); font-size: 12px; }
+.ribbon { color: var(--s1); font-size: 12px; font-weight: 650; margin-left: auto; }
+.blk-hyp { margin: 0; color: var(--ink); display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; font-size: 13px; }
+.blk-err { margin: 0; color: var(--ink-2); font-size: 12px; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.blk-prof { color: var(--ink-2); font-size: 12px; }
+.blk-foot { margin-top: auto; color: var(--muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+table.data { width: 100%; border-collapse: collapse; font-size: 13px; }
+table.data th { text-align: left; color: var(--ink-2); font-weight: 600; border-bottom: 1px solid var(--axis); padding: 6px 10px 6px 0; }
+table.data td { border-bottom: 1px solid var(--grid); padding: 6px 10px 6px 0; vertical-align: top; font-variant-numeric: tabular-nums; }
+.tbl-wrap { overflow-x: auto; max-height: 460px; overflow-y: auto; }
+
+dialog { background: var(--surface); color: var(--ink); border: 1px solid var(--border); border-radius: 14px; padding: 0;
+  width: min(1000px, 94vw); max-height: 90vh; }
+dialog::backdrop { background: rgba(0,0,0,.45); }
+.dr { display: flex; flex-direction: column; max-height: 90vh; }
+.dr-head { display: flex; align-items: center; gap: 10px; padding: 14px 18px; border-bottom: 1px solid var(--grid); }
+.dr-head h3 { margin: 0; font-size: 16px; }
+.dr-head .btn { margin-left: auto; }
+.tabs { display: flex; flex-wrap: wrap; gap: 2px; padding: 0 12px; border-bottom: 1px solid var(--grid); }
+.tabs button { background: transparent; border: 0; border-bottom: 2px solid transparent; padding: 9px 10px; cursor: pointer; color: var(--ink-2); }
+.tabs button[aria-selected="true"] { color: var(--ink); border-bottom-color: var(--s1); font-weight: 650; }
+.dr-body { padding: 16px 18px; overflow: auto; }
+.facts { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px 16px; margin-bottom: 14px; }
+.facts .k { color: var(--ink-2); font-size: 12px; }
+.facts .v { font-size: 18px; font-weight: 650; }
+pre.code { margin: 0; font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; white-space: pre; overflow: auto; tab-size: 4; }
+pre.code .ln { display: block; padding: 0 6px; }
+pre.code .add { background: color-mix(in srgb, var(--good) 16%, transparent); }
+pre.code .del { background: color-mix(in srgb, var(--critical) 16%, transparent); }
+pre.code .hunk { color: var(--muted); }
+pre.md { margin: 0; font: 13px/1.55 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; white-space: pre-wrap; word-break: break-word; }
+.sec { margin: 16px 0 6px; font-weight: 650; }
+.note-list { margin: 4px 0; padding-left: 18px; color: var(--ink-2); }
+.links { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
+.links a { color: var(--s1); }
+.links .p { color: var(--muted); font-size: 12px; margin-left: 8px; }
+.filepick { margin: 0 0 8px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div id="banner"></div>
+  <header class="top">
+    <div>
+      <h1 id="title">Kernel optimization</h1>
+      <div class="sub" id="subtitle"></div>
+    </div>
+    <div class="filters">
+      <label id="run-wrap">Run <select id="run"></select></label>
+      <label><input type="checkbox" id="tableview"> Table view</label>
+      <button class="btn" id="theme" type="button">Theme</button>
+      <span class="live" id="live"></span>
+    </div>
+  </header>
+
+  <section class="kpis" id="kpis" aria-label="Summary"></section>
+
+  <section class="card" id="c-speed">
+    <div class="card-head">
+      <h2 id="speed-title">Latency by iteration</h2>
+      <div class="ctl seg" id="speed-mode" role="group" aria-label="Chart units">
+        <button type="button" data-m="latency" aria-pressed="true">Latency</button>
+        <button type="button" data-m="speedup" aria-pressed="false">Speedup</button>
+      </div>
+    </div>
+    <p class="desc" id="speed-desc"></p>
+    <div class="viz" id="speed-viz"></div>
+    <div class="legend" id="speed-legend"></div>
+  </section>
+
+  <div class="row">
+    <section class="card" id="c-roof">
+      <h2>Roofline</h2>
+      <p class="desc" id="roof-desc"></p>
+      <div class="viz" id="roof-viz"></div>
+      <div class="legend" id="roof-legend"></div>
+    </section>
+    <section class="card" id="c-ai">
+      <h2>Arithmetic intensity by iteration</h2>
+      <p class="desc" id="ai-desc"></p>
+      <div class="viz" id="ai-viz"></div>
+      <div class="legend" id="ai-legend"></div>
+    </section>
+  </div>
+
+  <div class="row">
+    <section class="card" id="c-trend">
+      <h2>Profiler metrics by iteration</h2>
+      <p class="desc">Nsight Compute, time-weighted over all kernels of the call. Higher SM and tensor-pipe activity with the same or lower memory pressure means the kernel is doing more useful math per byte.</p>
+      <div class="viz" id="trend-viz"></div>
+      <div class="legend" id="trend-legend"></div>
+    </section>
+    <section class="card" id="c-strat">
+      <div class="card-head">
+        <h2>Which ideas paid off</h2>
+        <div class="ctl seg" id="ideas-mode" role="group" aria-label="Group by">
+          <button type="button" data-m="strategy" aria-pressed="true">Strategy</button>
+          <button type="button" data-m="worker" aria-pressed="false">Worker</button>
+        </div>
+      </div>
+      <p class="desc">Share of attempts that beat their parent by at least 2%.</p>
+      <div class="viz" id="strat-viz"></div>
+    </section>
+  </div>
+
+  <section style="margin-top:22px">
+    <div class="blk-head">
+      <h2 style="margin:0;font-size:15px">Iterations</h2>
+      <span class="live" id="blk-count"></span>
+      <div class="ctl">
+        <div class="seg" id="filter" role="group" aria-label="Filter iterations">
+          <button type="button" data-f="all" aria-pressed="true">All</button>
+          <button type="button" data-f="ok" aria-pressed="false">Correct</button>
+          <button type="button" data-f="bad" aria-pressed="false">Failed</button>
+          <button type="button" data-f="best" aria-pressed="false">New bests</button>
+        </div>
+        <label class="live">Sort
+          <select id="sort"><option value="iter">Iteration</option><option value="new">Newest first</option><option value="speed">Speedup</option></select>
+        </label>
+      </div>
+    </div>
+    <div id="blocks"></div>
+  </section>
+</div>
+
+<div id="tip" role="tooltip"></div>
+<dialog id="drawer" aria-label="Iteration details"></dialog>
+
+<script>window.__DASH__ = /*__DATA__*/null;</script>
+<script>
+(() => {
+"use strict";
+const $ = (sel, el = document) => el.querySelector(sel);
+const NS = "http://www.w3.org/2000/svg";
+// All text goes in through textContent / text nodes: hypotheses, errors, kernels and logs are untrusted text.
+function h(tag, attrs, ...kids) {
+  const el = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs || {})) {
+    if (v == null || v === false) continue;
+    if (k === "class") el.className = v;
+    else if (k.startsWith("on")) el.addEventListener(k.slice(2), v);
+    else el.setAttribute(k, v === true ? "" : v);
+  }
+  for (const c of kids.flat()) if (c != null && c !== false) el.append(c);
+  return el;
+}
+function s(tag, attrs, ...kids) {
+  const el = document.createElementNS(NS, tag);
+  for (const [k, v] of Object.entries(attrs || {})) if (v != null && v !== false) el.setAttribute(k, v);
+  for (const c of kids.flat()) if (c != null && c !== false) el.append(c);
+  return el;
+}
+
+let D = window.__DASH__;
+const STATIC = D !== null;
+const state = { filter: "all", sort: "iter", table: false, run: D ? D.run_id : null, mode: "latency", ideas: "strategy" };
+
+const STATUS = { pass: "Correct", fail: "Wrong output", crash: "Crashed", timeout: "Timed out", rejected: "Rejected",
+  running: "Running", infra: "Infra error" };
+const KIND = { seed: "Baseline", improve: "Improve", repair: "Repair" };
+
+const fmtTime = ns => ns == null ? "–" : ns >= 1e9 ? (ns / 1e9).toFixed(ns >= 1e10 ? 1 : 2) + " s"
+  : ns >= 1e6 ? (ns / 1e6).toFixed(ns >= 1e8 ? 0 : ns >= 1e7 ? 1 : 2) + " ms" : ns >= 1e3 ? (ns / 1e3).toFixed(1) + " µs" : ns.toFixed(0) + " ns";
+const fmtX = x => x == null ? "–" : (x >= 100 ? x.toFixed(0) : x >= 10 ? x.toFixed(1) : x.toFixed(2)) + "×";
+const fmtPct = p => p == null ? "–" : p >= 10 ? p.toFixed(0) + "%" : p >= 1 ? p.toFixed(1) + "%" : p >= 0.01 ? p.toFixed(2) + "%" : "<0.01%";
+const fmtTF = t => t >= 100 ? t.toFixed(0) : t >= 10 ? t.toFixed(1) : t >= 1 ? t.toFixed(2) : t.toFixed(3);
+const fmtAI = a => a == null ? "–" : a >= 100 ? a.toFixed(0) : a.toFixed(1);
+const fmtBytes = b => b == null ? "–" : b >= 1e9 ? (b / 1e9).toFixed(2) + " GB" : b >= 1e6 ? (b / 1e6).toFixed(1) + " MB" : b >= 1e3 ? (b / 1e3).toFixed(0) + " KB" : b.toFixed(0) + " B";
+const clip = (str, n) => (str || "").length > n ? str.slice(0, n - 1) + "…" : (str || "");
+const oneLine = str => (str || "").replace(/\s+/g, " ").trim();
+
+function logTicks(lo, hi, steps) {
+  const out = [];
+  for (let e = Math.floor(Math.log10(lo)); e <= Math.ceil(Math.log10(hi)); e++)
+    for (const k of steps) { const v = k * 10 ** e; if (v >= lo * 0.999 && v <= hi * 1.001) out.push(v); }
+  return out;
+}
+const tickLabel = v => String(+v.toPrecision(2));
+const fileHref = rel => STATIC ? rel : "/raw/" + encodeURIComponent(D.run_id) + "/" + rel.split("/").map(encodeURIComponent).join("/");
+
+// ---- status glyphs: shape + colour, never colour alone -----------------------------------
+function glyph(status, x, y, r = 5) {
+  const c = "g-" + status;
+  switch (status) {
+    case "fail": return s("path", { class: c, d: `M${x - r} ${y - r}L${x + r} ${y + r}M${x + r} ${y - r}L${x - r} ${y + r}` });
+    case "crash": return s("path", { class: c, d: `M${x} ${y - r - 1}L${x + r + 1} ${y + r}L${x - r - 1} ${y + r}Z` });
+    case "timeout": return s("rect", { class: c, x: x - r + 1, y: y - r + 1, width: 2 * r - 2, height: 2 * r - 2, rx: 1 });
+    case "rejected": return s("path", { class: c, d: `M${x} ${y - r - 1}L${x + r + 1} ${y}L${x} ${y + r + 1}L${x - r - 1} ${y}Z` });
+    case "running": case "infra": return s("circle", { class: c, cx: x, cy: y, r: r - 0.5 });
+    default: return s("path", { class: c, d: `M${x - r} ${y}L${x - r / 3} ${y + r * 0.7}L${x + r} ${y - r * 0.7}` });
+  }
+}
+function glyphSvg(status, size = 14) {
+  return s("svg", { width: size, height: size, viewBox: "0 0 14 14", "aria-hidden": "true" }, glyph(status, 7, 7, 4.2));
+}
+const badge = status => h("span", { class: "badge" }, glyphSvg(status), STATUS[status] || status);
+
+// ---- tooltip --------------------------------------------------------------------------------
+const tip = $("#tip");
+function showTip(ev, nodes) {
+  tip.replaceChildren(...nodes);
+  tip.style.display = "block";
+  const r = tip.getBoundingClientRect();
+  let x = ev.clientX + 14, y = ev.clientY + 14;
+  if (x + r.width > innerWidth - 8) x = ev.clientX - r.width - 14;
+  if (y + r.height > innerHeight - 8) y = ev.clientY - r.height - 14;
+  tip.style.left = Math.max(8, x) + "px"; tip.style.top = Math.max(8, y) + "px";
+}
+const hideTip = () => { tip.style.display = "none"; };
+function candTip(c, extra) {
+  const head = `#${c.id} ${KIND[c.kind] || c.kind}` + (c.parent_id ? ` ← #${c.parent_id}` : "") + (c.worker ? ` · ${c.worker}` : "");
+  const val = c.speedup
+    ? h("div", { class: "tv" }, fmtTime(c.geomean_ns), h("small", null, fmtX(c.speedup) + " vs baseline"))
+    : h("div", { class: "tv" }, STATUS[c.status] || c.status);
+  return [h("div", { class: "th" }, head), val, extra ? h("div", { class: "ts" }, extra) : null,
+    c.hypothesis ? h("div", { class: "ts" }, clip(c.hypothesis, 150)) : null];
+}
+const empty = msg => h("div", { class: "empty" }, msg);
+const seedOf = () => D.candidates.find(c => c.kind === "seed") || null;
+const bestOf = () => D.candidates.filter(c => c.speedup).reduce((a, c) => (!a || c.speedup > a.speedup ? c : a), null);
+const markerSvg = kids => s("svg", { width: 16, height: 14, viewBox: "0 0 16 14", "aria-hidden": "true" }, kids);
+const legendItem = (kids, text) => h("span", null, markerSvg(kids), text);
+
+// profiled-shape facts of a candidate that has a profile
+const profAI = c => c.profile && c.profile.ok ? c.profile.totals.ai_measured : null;
+const algAI = () => { const c = D.candidates.find(x => x.roof_point); return c && D.shapes[c.roof_point.shape] ? D.shapes[c.roof_point.shape].intensity : null; };
+const ridgeAI = () => D.peaks ? D.peaks.tflops / D.peaks.tbps : null;   // TFLOP/s / (TB/s) = FLOP/byte
+
+// ---- KPI tiles ------------------------------------------------------------------------------
+function kpis() {
+  const C = D.candidates, best = bestOf(), ok = C.filter(c => c.speedup);
+  const tile = (cls, label, value, note) => h("div", { class: "tile " + cls },
+    h("div", { class: "lbl" }, label), h("div", { class: "val" }, value), note ? h("div", { class: "note" }, note) : null);
+  const out = [];
+  out.push(tile("hero", "Best latency", best ? fmtTime(best.geomean_ns) : "–",
+    best ? `${fmtX(best.speedup)} faster than the baseline (${fmtTime(D.seed_ns)}) · candidate #${best.id}` : "no correct candidate yet"));
+  const rp = best && best.roof_point, bp = best && D.shapes.length ? best.benchmarks[D.shapes.length - 1] : null;
+  const pr = rp ? rp.pct_roof : bp && bp.pct_roof != null ? bp.pct_roof : null;
+  if (pr != null) out.push(tile("", "Best vs roofline", fmtPct(pr), rp ? `of attainable, ${D.shapes[rp.shape].label}` : `of attainable, ${D.shapes[D.shapes.length - 1].label}`));
+  const ai = best ? profAI(best) : null;
+  if (ai) out.push(tile("", "Measured arithmetic intensity", fmtAI(ai) + " FLOP/B", `algorithmic ${fmtAI(algAI())}` + (ridgeAI() ? ` · ridge ${fmtAI(ridgeAI())}` : "")));
+  out.push(tile("", "Iterations", String(C.length), `${ok.length} correct · ${C.filter(c => !c.speedup && c.status !== "running").length} failed` + (C.some(c => c.status === "running") ? ` · ${C.filter(c => c.status === "running").length} running` : "")));
+  const sinceBest = best ? C.filter(c => c.id > best.id).length : C.length;
+  out.push(tile("", "Since last best", String(sinceBest), sinceBest === 1 ? "iteration" : "iterations"));
+  $("#kpis").replaceChildren(...out);
+}
+
+// ---- generic per-iteration line chart (x = iteration order) ----------------------------------
+function lineChart(box, o) {
+  // o: {series:[{name, cls, pts:[{i, y, c}]}], yLog, yFmt, lo, hi, ticks, refs:[{y,label,cls}], aria, H}
+  box.replaceChildren();
+  const C = D.candidates, n = C.length;
+  const W = Math.max(380, box.clientWidth), H = o.H || 300, m = { l: 54, r: 74, t: 14, b: 30 };
+  const ph = H - m.t - m.b, iw = W - m.l - m.r;
+  const xs = i => m.l + (i + 0.5) / n * iw;
+  const y = v => o.yLog ? m.t + ph - (Math.log(v) - Math.log(o.lo)) / (Math.log(o.hi) - Math.log(o.lo)) * ph
+                        : m.t + ph - (v - o.lo) / (o.hi - o.lo) * ph;
+  const svg = s("svg", { class: "chart", viewBox: `0 0 ${W} ${H}`, width: W, height: H, role: "img", "aria-label": o.aria });
+  for (const t of o.ticks) svg.append(s("line", { class: "grid", x1: m.l, x2: W - m.r, y1: y(t), y2: y(t) }),
+    s("text", { class: "tick", x: m.l - 8, y: y(t) + 4, "text-anchor": "end" }, o.yFmt(t)));
+  for (const r of o.refs || []) if (r.y >= o.lo && r.y <= o.hi)
+    svg.append(s("line", { class: r.cls || "ref", x1: m.l, x2: W - m.r, y1: y(r.y), y2: y(r.y) }),
+      s("text", { class: "lbl", x: W - m.r + 6, y: y(r.y) + 4 }, r.label));
+  const step = Math.max(1, Math.ceil(n / Math.max(1, Math.floor(iw / 30))));
+  C.forEach((c, i) => { if (i % step === 0 || i === n - 1) svg.append(s("text", { class: "tick", x: xs(i), y: H - 8, "text-anchor": "middle" }, "#" + c.id)); });
+  for (const se of o.series) {
+    const pts = se.pts.filter(p => p.y != null && p.y >= o.lo * 0.999 && p.y <= o.hi * 1.001);
+    if (pts.length > 1) svg.append(s("path", { class: se.cls, d: pts.map((p, k) => (k ? "L" : "M") + xs(p.i) + " " + y(p.y)).join("") }));
+    for (const p of pts) svg.append(s("circle", { class: "ring " + se.dot, cx: xs(p.i), cy: y(p.y), r: p.c.new_best ? 5.5 : 3.5 }));
+  }
+  const cross = s("line", { class: "axis", y1: m.t, y2: H - m.b, visibility: "hidden" });
+  const hit = s("rect", { class: "hit", x: m.l, y: m.t, width: iw, height: H - m.t - m.b });
+  const idx = ev => { const r = svg.getBoundingClientRect(); const px = (ev.clientX - r.left) * (W / r.width);
+    return Math.max(0, Math.min(n - 1, Math.floor((px - m.l) / iw * n))); };
+  hit.addEventListener("pointermove", ev => {
+    const i = idx(ev), c = C[i];
+    cross.setAttribute("x1", xs(i)); cross.setAttribute("x2", xs(i)); cross.setAttribute("visibility", "visible");
+    const vals = o.series.map(se => { const p = se.pts.find(q => q.i === i); return p && p.y != null ? `${se.name}: ${o.yFmt(p.y)}` : null; }).filter(Boolean);
+    showTip(ev, candTip(c, vals.join(" · ") || "no profile for this iteration"));
+  });
+  hit.addEventListener("pointerleave", () => { cross.setAttribute("visibility", "hidden"); hideTip(); });
+  hit.addEventListener("click", ev => openDrawer(C[idx(ev)].id));
+  svg.append(cross, hit);
+  box.append(svg);
+}
+
+// ---- chart 1: latency / speedup per iteration -------------------------------------------------
+function chartSpeed() {
+  const box = $("#speed-viz"); box.replaceChildren();
+  const lat = state.mode === "latency";
+  $("#speed-title").textContent = lat ? "Latency by iteration" : "Speedup over the baseline, by iteration";
+  $("#speed-desc").textContent = lat
+    ? "Geometric mean of the benchmark shapes, measured with no profiler attached (log scale, lower is better). The line is the best latency so far; failures sit in the strip below."
+    : "Each dot is a correct candidate: how many times faster than the baseline (geometric mean over the benchmark shapes, log scale). The line is the best so far.";
+  const C = D.candidates;
+  if (!C.length) { box.append(empty("No iterations yet.")); return; }
+  const val = c => c.speedup ? (lat ? c.geomean_ns : c.speedup) : null;
+  const better = (a, b) => lat ? a < b : a > b;
+  const W = Math.max(480, box.clientWidth), H = 360;
+  const failed = C.filter(c => !c.speedup);
+  const strip = failed.length ? 46 : 0;
+  const m = { l: 62, r: 96, t: 14, b: 30 };
+  const ph = H - m.t - m.b - strip, n = C.length, iw = W - m.l - m.r;
+  const xs = i => m.l + (i + 0.5) / n * iw;
+  const vs = C.map(val).filter(v => v != null);
+  const mn = vs.length ? Math.min(...vs) : 1, mx = vs.length ? Math.max(...vs) : 1;
+  const lo = lat ? mn / 1.4 : Math.min(0.5, mn * 0.8), hi = lat ? mx * 1.4 : Math.max(2, mx * 1.3);
+  const y = v => m.t + ph - (Math.log(v) - Math.log(lo)) / (Math.log(hi) - Math.log(lo)) * ph;
+  const fmtT = v => lat ? fmtTime(v) : tickLabel(v) + "×";
+  const svg = s("svg", { class: "chart", viewBox: `0 0 ${W} ${H}`, width: W, height: H, role: "img",
+    "aria-label": (lat ? "Latency" : "Speedup over the baseline") + " for each iteration. The table view has the same data." });
+  for (const t of logTicks(lo, hi, [1, 2, 5])) {
+    svg.append(s("line", { class: "grid", x1: m.l, x2: W - m.r, y1: y(t), y2: y(t) }),
+      s("text", { class: "tick", x: m.l - 8, y: y(t) + 4, "text-anchor": "end" }, fmtT(t)));
+  }
+  let cur = null;
+  const rb = C.map(c => { const v = val(c); if (v != null && (cur === null || better(v, cur))) cur = v; return cur; });
+  const bestNow = cur;
+  const seed = seedOf(), sv = seed ? val(seed) : null;
+  if (sv != null) svg.append(s("line", { class: "ref", x1: m.l, x2: W - m.r, y1: y(sv), y2: y(sv) }),
+    s("text", { class: "lbl", x: W - m.r + 8, y: y(sv) + 4 }, "baseline"));
+  let d = "";
+  rb.forEach((v, i) => { if (v == null) return; d += d ? `H${xs(i)}V${y(v)}` : `M${xs(i)} ${y(v)}`; });
+  if (d) svg.append(s("path", { class: "best-line", d }));
+  C.forEach((c, i) => { if (val(c) != null && !c.new_best && c.kind !== "seed")
+    svg.append(s("circle", { class: "dot-mute ring", cx: xs(i), cy: y(val(c)), r: 4.5 })); });
+  C.forEach((c, i) => {
+    const v = val(c); if (v == null) return;
+    if (c.kind === "seed") svg.append(s("path", { class: "dia ring", d: `M${xs(i)} ${y(v) - 7}L${xs(i) + 7} ${y(v)}L${xs(i)} ${y(v) + 7}L${xs(i) - 7} ${y(v)}Z` }));
+    else if (c.new_best) svg.append(s("circle", { class: "dot-best ring", cx: xs(i), cy: y(v), r: 6 }));
+  });
+  if (bestNow && n > 1) svg.append(s("text", { class: "lbl-ink", x: xs(n - 1) + 12, y: y(bestNow) + (sv != null && Math.abs(y(bestNow) - y(sv)) < 15 ? -8 : 4) }, "best " + (lat ? fmtTime(bestNow) : fmtX(bestNow))));
+
+  if (strip) {
+    const sy = m.t + ph + 8 + strip / 2 - 4;
+    svg.append(s("line", { class: "axis", x1: m.l, x2: W - m.r, y1: m.t + ph + 4, y2: m.t + ph + 4 }),
+      s("text", { class: "tick", x: m.l - 8, y: sy + 4, "text-anchor": "end" }, "failed"));
+    C.forEach((c, i) => { if (!c.speedup) svg.append(glyph(c.status, xs(i), sy, 5)); });
+  }
+  const step = Math.max(1, Math.ceil(n / Math.floor(iw / 30)));
+  C.forEach((c, i) => { if (i % step === 0 || i === n - 1)
+    svg.append(s("text", { class: "tick", x: xs(i), y: H - 8, "text-anchor": "middle" }, "#" + c.id)); });
+
+  const cross = s("line", { class: "axis", y1: m.t, y2: H - m.b, visibility: "hidden" });
+  const hl = s("circle", { r: 9, fill: "none", stroke: "var(--ink)", "stroke-width": 1.5, visibility: "hidden" });
+  const hit = s("rect", { class: "hit", x: m.l, y: m.t, width: iw, height: H - m.t - m.b });
+  const idx = ev => { const r = svg.getBoundingClientRect(); const px = (ev.clientX - r.left) * (W / r.width);
+    return Math.max(0, Math.min(n - 1, Math.floor((px - m.l) / iw * n))); };
+  hit.addEventListener("pointermove", ev => {
+    const i = idx(ev), c = C[i];
+    cross.setAttribute("x1", xs(i)); cross.setAttribute("x2", xs(i)); cross.setAttribute("visibility", "visible");
+    const cy = val(c) != null ? y(val(c)) : m.t + ph + 8 + strip / 2 - 4;
+    hl.setAttribute("cx", xs(i)); hl.setAttribute("cy", cy); hl.setAttribute("visibility", "visible");
+    showTip(ev, candTip(c, c.speedup && rb[i] ? `best so far ${lat ? fmtTime(rb[i]) : fmtX(rb[i])}` + (c.vs_parent ? ` · ${fmtX(c.vs_parent)} vs parent` : "") : (c.error ? clip(oneLine(c.error), 110) : "")));
+  });
+  hit.addEventListener("pointerleave", () => { cross.setAttribute("visibility", "hidden"); hl.setAttribute("visibility", "hidden"); hideTip(); });
+  hit.addEventListener("click", ev => openDrawer(C[idx(ev)].id));
+  svg.append(cross, hl, hit);
+  box.append(svg);
+
+  const leg = [];
+  leg.push(legendItem(s("path", { class: "dia", d: "M8 1L14 7L8 13L2 7Z" }), "baseline"));
+  leg.push(legendItem(s("circle", { class: "dot-best", cx: 8, cy: 7, r: 5 }), "new best"));
+  leg.push(legendItem(s("circle", { class: "dot-mute", cx: 8, cy: 7, r: 4 }), "correct, not a new best"));
+  leg.push(legendItem(s("line", { class: "best-line", x1: 1, x2: 15, y1: 7, y2: 7 }), "best so far"));
+  for (const st of ["fail", "crash", "timeout", "rejected", "running", "infra"]) if (failed.some(c => c.status === st)) leg.push(h("span", null, glyphSvg(st, 14), STATUS[st].toLowerCase()));
+  $("#speed-legend").replaceChildren(...leg);
+}
+
+// ---- chart 2: roofline (measured intensity, with the best-so-far trajectory) ------------------
+function chartRoof() {
+  const box = $("#roof-viz"); box.replaceChildren();
+  const P = D.peaks;
+  const pts = D.candidates.filter(c => c.roof_point).map(c => ({ c, p: c.roof_point }));
+  if (!D.shapes.length || !P) {
+    $("#roof-desc").textContent = ""; $("#roof-legend").replaceChildren();
+    box.append(empty(P ? "No FLOP/byte model for this problem yet (problems/<name>/cost.py)." : "No hardware peaks known for " + D.gpu + " (agent/roofline.py)."));
+    return;
+  }
+  const bw = P.tbps, peak = P.tflops, ridge = peak / bw;
+  const ai0 = algAI();
+  $("#roof-desc").textContent = `${P.label}: ${P.tflops} TFLOP/s peak, ${P.tbps} TB/s HBM. x is the measured arithmetic intensity (algorithmic FLOPs over the DRAM bytes Nsight Compute saw), y the throughput from the benchmark. Better kernels move right (more reuse, less traffic) and up; the dashed line is the intensity of an ideal-reuse kernel.`;
+  if (!pts.length) { $("#roof-legend").replaceChildren(); box.append(empty("No profiled iterations yet: the roofline appears once a correct candidate has an Nsight Compute profile.")); return; }
+  const W = Math.max(380, box.clientWidth), H = 400, m = { l: 62, r: 22, t: 16, b: 46 };
+  const xsAll = [...pts.map(q => q.p.ai), ridge, ...(ai0 ? [ai0] : [])];
+  const minT = Math.min(...pts.map(q => q.p.tflops), peak / 1e3);
+  const xlo = 10 ** (Math.floor(Math.log10(Math.min(...xsAll)) - 0.3)), xhi = 10 ** (Math.ceil(Math.log10(Math.max(...xsAll)) + 0.3));
+  const ylo = 10 ** (Math.floor(Math.log10(minT) - 0.2)), yhi = peak * 1.8;
+  const pw = W - m.l - m.r, ph = H - m.t - m.b;
+  const lx = v => m.l + (Math.log(v) - Math.log(xlo)) / (Math.log(xhi) - Math.log(xlo)) * pw;
+  const ly = v => m.t + ph - (Math.log(v) - Math.log(ylo)) / (Math.log(yhi) - Math.log(ylo)) * ph;
+  const svg = s("svg", { class: "chart", viewBox: `0 0 ${W} ${H}`, width: W, height: H, role: "img",
+    "aria-label": "Roofline: achieved TFLOP/s against measured arithmetic intensity. The table view has the same data." });
+  svg.append(s("defs", null, s("marker", { id: "arr", viewBox: "0 0 10 10", refX: 9, refY: 5, markerWidth: 7, markerHeight: 7, orient: "auto-start-reverse" }, s("path", { class: "arrow", d: "M0 0L10 5L0 10Z" }))));
+  for (const t of logTicks(ylo, yhi, [1]))
+    svg.append(s("line", { class: "grid", x1: m.l, x2: W - m.r, y1: ly(t), y2: ly(t) }),
+      s("text", { class: "tick", x: m.l - 8, y: ly(t) + 4, "text-anchor": "end" }, t >= 1 ? String(t) : String(+t.toPrecision(1))));
+  for (const t of logTicks(xlo, xhi, [1]))
+    svg.append(s("line", { class: "grid", x1: lx(t), x2: lx(t), y1: m.t, y2: m.t + ph }),
+      s("text", { class: "tick", x: lx(t), y: m.t + ph + 16, "text-anchor": "middle" }, t >= 1 ? String(t) : String(+t.toPrecision(1))));
+  svg.append(s("text", { class: "lbl-2", x: m.l + pw / 2, y: H - 6, "text-anchor": "middle" }, "arithmetic intensity (FLOP per DRAM byte, measured)"),
+    s("text", { class: "lbl-2", transform: `translate(14 ${m.t + ph / 2}) rotate(-90)`, "text-anchor": "middle" }, "achieved TFLOP/s"));
+
+  const x0 = Math.max(xlo, ylo / bw), roofPts = [[x0, bw * x0], [ridge, peak], [xhi, peak]];
+  const poly = [[x0, ylo], ...roofPts, [xhi, ylo]].map(([a, b], k) => (k ? "L" : "M") + lx(a) + " " + ly(b)).join("") + "Z";
+  svg.append(s("path", { class: "roof-wash", d: poly }), s("path", { class: "roof", d: roofPts.map(([a, b], k) => (k ? "L" : "M") + lx(a) + " " + ly(b)).join("") }));
+  const xm = x0 * (ridge / x0) ** 0.3, px = lx(xm), py = ly(bw * xm);
+  const ang = Math.atan2(ly(peak) - ly(bw * x0), lx(ridge) - lx(x0)) * 180 / Math.PI;
+  if (W >= 560) svg.append(s("text", { class: "lbl-2", x: px, y: py - 9, "text-anchor": "middle", transform: `rotate(${ang} ${px} ${py})` }, `HBM ${bw} TB/s`));
+  svg.append(s("text", { class: "lbl-2", x: W - m.r - 4, y: ly(peak) - 8, "text-anchor": "end" }, `${peak} TFLOP/s peak`));
+  if (ai0 && ai0 >= xlo && ai0 <= xhi) {
+    const sh = D.shapes[pts[0].p.shape];
+    svg.append(s("line", { class: "ref", x1: lx(ai0), x2: lx(ai0), y1: m.t, y2: m.t + ph }),
+      s("text", { class: "lbl-2", x: lx(ai0) - 6, y: m.t + 14, "text-anchor": ai0 > Math.sqrt(xlo * xhi) ? "end" : "start", dx: ai0 > Math.sqrt(xlo * xhi) ? 0 : 12 }, "ideal reuse"),
+      s("circle", { cx: lx(ai0), cy: ly(sh.roof_tflops), r: 3, fill: "var(--ink)" }));
+  }
+  const trail = pts.filter(q => q.c.new_best).sort((a, b) => a.c.id - b.c.id);
+  for (let k = 1; k < trail.length; k++) {
+    const a = trail[k - 1].p, b = trail[k].p;
+    svg.append(s("path", { class: "traj", d: `M${lx(a.ai)} ${ly(a.tflops)}L${lx(b.ai)} ${ly(b.tflops)}`, "marker-end": "url(#arr)" }));
+  }
+  for (const q of pts) if (!q.c.new_best && q.c.kind !== "seed")
+    svg.append(s("circle", { class: "dot-mute ring", cx: lx(q.p.ai), cy: ly(q.p.tflops), r: 4 }));
+  const best = bestOf();
+  for (const q of pts) {
+    const x = lx(q.p.ai), y = ly(q.p.tflops);
+    if (q.c.kind === "seed") svg.append(s("path", { class: "dia ring", d: `M${x} ${y - 7}L${x + 7} ${y}L${x} ${y + 7}L${x - 7} ${y}Z` }), s("text", { class: "lbl-2", x: x + 11, y: y + 4 }, "baseline"));
+    else if (q.c.new_best) {
+      const isBest = best && q.c.id === best.id;
+      svg.append(s("circle", { class: "dot-best ring", cx: x, cy: y, r: isBest ? 7 : 5 }));
+      if (trail.length <= 8 || isBest) svg.append(s("text", { class: isBest ? "lbl-ink" : "lbl", x: x + 10, y: y - 8 }, `#${q.c.id}` + (isBest ? ` · ${fmtPct(q.p.pct_roof)} of roof` : "")));
+    }
+  }
+  const hl = s("circle", { r: 11, fill: "none", stroke: "var(--ink)", "stroke-width": 1.5, visibility: "hidden" });
+  const hit = s("rect", { class: "hit", x: m.l, y: m.t, width: pw, height: ph });
+  const near = ev => { const r = svg.getBoundingClientRect(), k = W / r.width;
+    const mx = (ev.clientX - r.left) * k, my = (ev.clientY - r.top) * k; let bp = null, bd = 30;
+    for (const q of pts) { const d = Math.hypot(lx(q.p.ai) - mx, ly(q.p.tflops) - my); if (d < bd) { bd = d; bp = q; } }
+    return bp; };
+  hit.addEventListener("pointermove", ev => {
+    const q = near(ev);
+    if (!q) { hl.setAttribute("visibility", "hidden"); hideTip(); return; }
+    hl.setAttribute("cx", lx(q.p.ai)); hl.setAttribute("cy", ly(q.p.tflops)); hl.setAttribute("visibility", "visible");
+    showTip(ev, [h("div", { class: "th" }, `#${q.c.id} ${KIND[q.c.kind] || q.c.kind} · ${D.shapes[q.p.shape].label}`),
+      h("div", { class: "tv" }, fmtTF(q.p.tflops) + " TFLOP/s", h("small", null, fmtTime(q.c.benchmarks[q.p.shape].mean_ns))),
+      h("div", { class: "ts" }, `intensity ${fmtAI(q.p.ai)} FLOP/B · ${fmtPct(q.p.pct_roof)} of the roof · ${fmtX(q.c.speedup)} vs baseline`)]);
+  });
+  hit.addEventListener("pointerleave", () => { hl.setAttribute("visibility", "hidden"); hideTip(); });
+  hit.addEventListener("click", ev => { const q = near(ev); if (q) openDrawer(q.c.id); });
+  svg.append(hl, hit);
+  box.append(svg);
+  $("#roof-legend").replaceChildren(
+    legendItem(s("path", { class: "dia", d: "M8 1L14 7L8 13L2 7Z" }), "baseline"),
+    legendItem(s("circle", { class: "dot-best", cx: 8, cy: 7, r: 5 }), "new best (arrows: trajectory)"),
+    legendItem(s("circle", { class: "dot-mute", cx: 8, cy: 7, r: 4 }), "other profiled iterations"),
+    legendItem(s("line", { class: "ref", x1: 1, x2: 15, y1: 7, y2: 7 }), "ideal-reuse intensity"),
+    legendItem(s("line", { class: "roof", x1: 1, x2: 15, y1: 7, y2: 7 }), "roof: min(peak, bandwidth × intensity)"));
+}
+
+// ---- chart 3: arithmetic intensity by iteration -------------------------------------------------
+function chartAI() {
+  const box = $("#ai-viz"); box.replaceChildren();
+  const C = D.candidates;
+  const pts = C.map((c, i) => ({ i, y: profAI(c), c })).filter(p => p.y);
+  const ai0 = algAI(), ridge = ridgeAI();
+  $("#ai-desc").textContent = "FLOPs per byte of DRAM traffic, from Nsight Compute, for the profiled shape. Rising toward the dashed line means the kernel reuses data on chip instead of re-reading it from HBM. Past the dotted ridge line it can become compute-bound.";
+  if (!pts.length) { $("#ai-legend").replaceChildren(); box.append(empty("No profiled iterations yet.")); return; }
+  const ys = [...pts.map(p => p.y), ...(ai0 ? [ai0] : []), ...(ridge ? [ridge] : [])];
+  const lo = Math.min(...ys) / 1.5, hi = Math.max(...ys) * 1.5;
+  lineChart(box, { series: [{ name: "measured", cls: "l-s1", dot: "d-s1", pts }], yLog: true, lo, hi, ticks: logTicks(lo, hi, [1, 2, 5]),
+    yFmt: v => fmtAI(v), aria: "Measured arithmetic intensity for each profiled iteration. The table view has the same data.",
+    refs: [...(ai0 ? [{ y: ai0, label: "ideal", cls: "ref" }] : []), ...(ridge ? [{ y: ridge, label: "ridge", cls: "ref-soft" }] : [])] });
+  $("#ai-legend").replaceChildren(legendItem(s("line", { class: "l-s1", x1: 1, x2: 15, y1: 7, y2: 7 }), "measured FLOP/byte"),
+    legendItem(s("line", { class: "ref", x1: 1, x2: 15, y1: 7, y2: 7 }), "ideal-reuse intensity"),
+    legendItem(s("line", { class: "ref-soft", x1: 1, x2: 15, y1: 7, y2: 7 }), "ridge point (compute-bound above)"));
+}
+
+// ---- chart 4: profiler metrics by iteration ----------------------------------------------------
+const TREND = [["sm_pct", "SM throughput", "s1"], ["mem_pct", "memory throughput", "s2"], ["occupancy_pct", "occupancy", "s3"], ["tensor_pct", "tensor pipe", "s4"]];
+function chartTrend() {
+  const box = $("#trend-viz"); box.replaceChildren();
+  const C = D.candidates;
+  const series = TREND.map(([k, name, col]) => ({ name, cls: "l-" + col, dot: "d-" + col,
+    pts: C.map((c, i) => ({ i, y: c.profile && c.profile.ok ? c.profile.totals[k] : null, c })).filter(p => p.y != null) })).filter(se => se.pts.length);
+  if (!series.length) { $("#trend-legend").replaceChildren(); box.append(empty("No profiled iterations yet.")); return; }
+  lineChart(box, { series, yLog: false, lo: 0, hi: 100, ticks: [0, 20, 40, 60, 80, 100], yFmt: v => Math.round(v) + "%",
+    aria: "Nsight Compute throughput, occupancy and tensor pipe activity for each profiled iteration. The table view has the same data." });
+  $("#trend-legend").replaceChildren(...series.map(se => legendItem(s("line", { class: se.cls, x1: 1, x2: 15, y1: 7, y2: 7 }), se.name)));
+}
+
+// ---- ideas / workers ---------------------------------------------------------------------------
+function strategies() {
+  const box = $("#strat-viz"); box.replaceChildren();
+  const list = state.ideas === "worker" ? D.workers : D.strategies;
+  if (!list.length) { box.append(empty("No attempts yet.")); return; }
+  const rows = list.map(st => {
+    const rate = st.wins / st.attempts;
+    return h("div", { class: "bar-row", title: `${st.name}\n${st.attempts} attempts · ${st.correct} correct · ${st.wins} beat their parent` },
+      h("div", { class: "nm" }, st.name),
+      h("div", { class: "meter", role: "img", "aria-label": `${st.wins} of ${st.attempts} attempts beat their parent` }, h("i", { style: `width:${Math.round(rate * 100)}%` })),
+      h("div", { class: "v" }, `${st.wins}/${st.attempts}`));
+  });
+  box.append(h("div", { class: "bars" }, rows));
+}
+
+// ---- iteration blocks -----------------------------------------------------------------------
+function blocks() {
+  const g = $("#blocks"); g.replaceChildren();
+  let list = D.candidates.slice();
+  if (state.filter === "ok") list = list.filter(c => c.speedup);
+  if (state.filter === "bad") list = list.filter(c => !c.speedup);
+  if (state.filter === "best") list = list.filter(c => c.new_best);
+  if (state.sort === "new") list.sort((a, b) => b.id - a.id);
+  if (state.sort === "speed") list.sort((a, b) => (b.speedup || -1) - (a.speedup || -1));
+  const maxSp = Math.max(1, ...D.candidates.map(c => c.speedup || 0));
+  $("#blk-count").textContent = `${list.length} of ${D.candidates.length}`;
+  if (!list.length) { g.append(empty("Nothing matches this filter.")); return; }
+  for (const c of list) {
+    const from = c.parent_id ? `from #${c.parent_id}` : "";
+    const t = c.profile && c.profile.ok ? c.profile.totals : null;
+    g.append(h("button", { type: "button", class: "blk" + (c.new_best ? " is-best" : ""), onclick: () => openDrawer(c.id),
+      "aria-label": `Iteration ${c.id}, ${STATUS[c.status] || c.status}${c.speedup ? ", " + fmtTime(c.geomean_ns) : ""}` },
+      h("div", { class: "blk-top" }, h("span", { class: "blk-id" }, "#" + c.id), h("span", { class: "chip" }, KIND[c.kind] || c.kind),
+        c.new_best ? h("span", { class: "ribbon" }, "★ New best") : badge(c.status)),
+      h("div", { class: "blk-main" }, h("span", { class: "blk-x" }, c.geomean_ns ? fmtTime(c.geomean_ns) : "–"),
+        h("span", { class: "blk-t" }, c.speedup ? fmtX(c.speedup) + " vs baseline" : STATUS[c.status] || ""),
+        c.vs_parent ? h("span", { class: "blk-d" }, fmtX(c.vs_parent) + " vs parent") : null),
+      h("div", { class: "meter", role: "img", "aria-label": c.speedup ? `${Math.round(c.speedup / maxSp * 100)}% of the best speedup in this run` : "not correct" },
+        h("i", { style: `width:${c.speedup ? Math.max(2, Math.round(c.speedup / maxSp * 100)) : 0}%` })),
+      c.hypothesis ? h("p", { class: "blk-hyp" }, c.hypothesis) : null,
+      t ? h("div", { class: "blk-prof" }, [t.ai_measured ? `AI ${fmtAI(t.ai_measured)} FLOP/B` : null, `SM ${fmtPct(t.sm_pct)}`, `mem ${fmtPct(t.mem_pct)}`, t.bound].filter(Boolean).join(" · ")) : null,
+      !c.speedup && c.error ? h("p", { class: "blk-err mono" }, oneLine(c.error)) : null,
+      h("div", { class: "blk-foot" }, [from, c.worker, c.strategy && c.kind !== "repair" ? clip(c.strategy, 40) : ""].filter(Boolean).join(" · "))));
+  }
+}
+
+// ---- detail drawer ------------------------------------------------------------------------
+const dlg = $("#drawer");
+function codeBlock(text, diff) {
+  const pre = h("pre", { class: "code" });
+  if (!diff) { pre.textContent = text; return pre; }
+  for (const line of text.split("\n")) {
+    const cls = line.startsWith("@@") ? "hunk" : line.startsWith("+") && !line.startsWith("+++") ? "add"
+      : line.startsWith("-") && !line.startsWith("---") ? "del" : "";
+    pre.append(h("span", { class: "ln " + cls }, line || " "));
+  }
+  return pre;
+}
+function table(cols, rows) {
+  return h("table", { class: "data" }, h("thead", null, h("tr", null, cols.map(c => h("th", null, c)))),
+    h("tbody", null, rows.map(r => h("tr", null, r.map(v => h("td", null, v == null ? "–" : v))))));
+}
+function profileTab(c) {
+  const P = c.profile, body = h("div");
+  if (!P) { body.append(empty(c.speedup ? "Not profiled." : "Only correct candidates are profiled.")); return body; }
+  if (!P.ok) { body.append(h("p", null, "No Nsight Compute profile: " + (P.reason || "unavailable"))); return body; }
+  const t = P.totals;
+  body.append(h("div", { class: "facts" }, [["Shape", P.shape_label], ["Kernel launches", t.kernel_launches], ["DRAM traffic", fmtBytes(t.dram_bytes)],
+    ["Measured AI", t.ai_measured ? fmtAI(t.ai_measured) + " FLOP/B" : "–"], ["SM throughput", fmtPct(t.sm_pct)], ["Memory throughput", fmtPct(t.mem_pct)],
+    ["Occupancy", fmtPct(t.occupancy_pct)], ["Tensor pipe", fmtPct(t.tensor_pct)], ["Verdict", t.bound]]
+    .map(([k, v]) => h("div", null, h("div", { class: "k" }, k), h("div", { class: "v" }, String(v))))));
+  body.append(h("div", { class: "sec" }, "Top kernels (Nsight Compute, relative timing)"), table(
+    ["Kernel", "Launches", "Time", "Share", "Bound", "SM", "Mem", "Occ", "Regs", "Smem"],
+    P.kernels.map(k => [h("span", { class: "mono" }, k.short), k.launches, fmtTime(k.duration_ns), fmtPct(100 * k.share), k.bound,
+      fmtPct(k.sm_pct), fmtPct(Math.max(k.mem_pct || 0, k.dram_pct || 0) || null), fmtPct(k.occupancy_pct), k.regs, k.smem ? fmtBytes(k.smem) : "–"])));
+  if (P.hidden_kernels) body.append(h("p", { class: "live" }, `${P.hidden_kernels} more small kernels in the raw csv.`));
+  return body;
+}
+function logsTab(c) {
+  if (!c.links.length) return empty("No files yet.");
+  return h("ul", { class: "links" }, c.links.map(l => h("li", null, h("a", { href: fileHref(l.rel), target: "_blank", rel: "noopener" }, l.label), h("span", { class: "p mono" }, l.rel))));
+}
+function filesTab(c) {
+  const names = Object.keys(c.files), wrap = h("div"), view = h("div");
+  if (!names.length) return empty("No kernel files.");
+  const sel = h("select", { class: "filepick", "aria-label": "Kernel file" }, names.map(n => h("option", { value: n }, n)));
+  const show = () => view.replaceChildren(codeBlock(c.files[sel.value]));
+  sel.addEventListener("change", show);
+  wrap.append(sel, view); show();
+  return wrap;
+}
+function openDrawer(id) {
+  const c = D.candidates.find(x => x.id === id); if (!c) return;
+  const seed = seedOf();
+  const tabs = [["Overview", () => {
+    const body = h("div");
+    body.append(h("div", { class: "facts" },
+      [["Latency", fmtTime(c.geomean_ns)], ["Speedup vs baseline", c.speedup ? fmtX(c.speedup) : "–"], ["vs parent", c.vs_parent ? fmtX(c.vs_parent) : "–"],
+        ["Status", STATUS[c.status] || c.status], ["Worker", c.worker || "–"], ["Evaluation", c.wall_s ? Math.round(c.wall_s) + " s" : "–"]]
+        .map(([k, v]) => h("div", null, h("div", { class: "k" }, k), h("div", { class: "v" }, v)))));
+    if (c.hypothesis) body.append(h("div", { class: "sec" }, "What was tried"), h("p", { style: "margin:0" }, c.hypothesis));
+    if (c.strategy) body.append(h("div", { class: "sec" }, "Strategy"), h("p", { style: "margin:0;color:var(--ink-2)" }, c.strategy));
+    if (c.benchmarks.length) body.append(h("div", { class: "sec" }, "Per benchmark shape"), table(
+      ["Shape", "Latency (mean ± std)", "vs baseline", "TFLOP/s", "% of roof"],
+      c.benchmarks.map((b, i) => { const sb = seed && seed.benchmarks[i];
+        return [b.label, `${fmtTime(b.mean_ns)} ± ${fmtTime(b.std_ns)}`, sb && sb.mean_ns && b.mean_ns ? fmtX(sb.mean_ns / b.mean_ns) : "–",
+          b.tflops != null ? fmtTF(b.tflops) : "–", b.pct_roof != null ? fmtPct(b.pct_roof) : "–"]; })));
+    if (c.notes.length) body.append(h("div", { class: "sec" }, "Pre-check"), h("ul", { class: "note-list" }, c.notes.map(n => h("li", null, n))));
+    return body; }]];
+  if (c.brief) tabs.push(["Brief", () => { const pre = h("pre", { class: "md" }); pre.textContent = c.brief; return pre; }]);
+  tabs.push(["Profile", () => profileTab(c)]);
+  tabs.push(["Logs", () => logsTab(c)]);
+  if (c.diff) tabs.push(["Diff vs parent", () => codeBlock(c.diff, true)]);
+  if (Object.keys(c.files).length) tabs.push(["Files", () => filesTab(c)]);
+  if (c.error) tabs.push(["Error", () => codeBlock(c.error)]);
+  const body = h("div", { class: "dr-body" });
+  const bar = h("div", { class: "tabs", role: "tablist" });
+  const show = k => { [...bar.children].forEach((b, j) => b.setAttribute("aria-selected", j === k ? "true" : "false")); body.replaceChildren(tabs[k][1]()); };
+  tabs.forEach(([name], k) => bar.append(h("button", { type: "button", role: "tab", onclick: () => show(k) }, name)));
+  dlg.replaceChildren(h("div", { class: "dr" },
+    h("div", { class: "dr-head" }, h("h3", null, `#${c.id} · ${KIND[c.kind] || c.kind}${c.parent_id ? " from #" + c.parent_id : ""}`), badge(c.status),
+      h("button", { class: "btn", type: "button", onclick: () => dlg.close() }, "Close")), bar, body));
+  show(c.error && !c.speedup && tabs.length > 1 ? tabs.length - 1 : 0);
+  hideTip();
+  if (!dlg.open) dlg.showModal();
+}
+dlg.addEventListener("click", ev => { if (ev.target === dlg) dlg.close(); });
+
+// ---- table view (the accessible twin of every chart) -------------------------------------------
+function tables() {
+  const C = D.candidates;
+  let best = null;
+  const lat = state.mode === "latency";
+  const speedRows = C.map(c => { if (c.speedup && (best === null || c.geomean_ns < best)) best = c.geomean_ns;
+    return [`#${c.id}`, KIND[c.kind] || c.kind, STATUS[c.status] || c.status, fmtTime(c.geomean_ns), c.speedup ? fmtX(c.speedup) : "–",
+      best ? fmtTime(best) : "–", c.worker || "–", clip(c.hypothesis, 90)]; });
+  $("#speed-viz").replaceChildren(h("div", { class: "tbl-wrap" }, table(["Iteration", "Kind", "Status", "Latency", "Speedup", "Best so far", "Worker", "Hypothesis"], speedRows)));
+  const roofRows = C.filter(c => c.roof_point).map(c => [`#${c.id}`, D.shapes[c.roof_point.shape].label, fmtTF(c.roof_point.tflops), fmtAI(c.roof_point.ai), fmtPct(c.roof_point.pct_roof), fmtTime(c.geomean_ns)]);
+  $("#roof-viz").replaceChildren(roofRows.length ? h("div", { class: "tbl-wrap" }, table(["Iteration", "Shape", "TFLOP/s", "FLOP/byte (measured)", "% of roof", "Latency"], roofRows)) : empty("No roofline data."));
+  const aiRows = C.filter(c => profAI(c)).map(c => [`#${c.id}`, fmtAI(profAI(c)), c.profile.totals.dram_bytes != null ? fmtBytes(c.profile.totals.dram_bytes) : "–", c.profile.totals.kernel_launches]);
+  $("#ai-viz").replaceChildren(aiRows.length ? h("div", { class: "tbl-wrap" }, table(["Iteration", "Measured FLOP/byte", "DRAM traffic", "Kernel launches"], aiRows)) : empty("No profiled iterations yet."));
+  const trRows = C.filter(c => c.profile && c.profile.ok).map(c => { const t = c.profile.totals; return [`#${c.id}`, fmtPct(t.sm_pct), fmtPct(t.mem_pct), fmtPct(t.occupancy_pct), fmtPct(t.tensor_pct), t.bound]; });
+  $("#trend-viz").replaceChildren(trRows.length ? h("div", { class: "tbl-wrap" }, table(["Iteration", "SM", "Memory", "Occupancy", "Tensor pipe", "Bound"], trRows)) : empty("No profiled iterations yet."));
+  const list = state.ideas === "worker" ? D.workers : D.strategies;
+  $("#strat-viz").replaceChildren(list.length ? table([state.ideas === "worker" ? "Worker" : "Strategy", "Attempts", "Correct", "Beat parent"], list.map(x => [clip(x.name, 70), x.attempts, x.correct, x.wins])) : empty("No attempts yet."));
+}
+
+function header() {
+  $("#title").textContent = `${D.problem} · ${D.gpu}`;
+  $("#subtitle").textContent = `run ${D.run_id}`;
+  $("#banner").replaceChildren(D.synthetic ? h("div", { class: "banner", role: "note" }, "Synthetic demo data: nothing here was measured. Submit candidates to see real results.") : "");
+  document.title = `${D.problem} on ${D.gpu} · kernel optimization`;
+}
+
+function render() {
+  header(); kpis();
+  if (state.table) tables(); else { chartSpeed(); chartRoof(); chartAI(); chartTrend(); strategies(); }
+  const hide = state.table ? "none" : "";
+  for (const id of ["#speed-legend", "#roof-legend", "#ai-legend", "#trend-legend"]) $(id).style.display = hide;
+  blocks();
+}
+
+// ---- controls ---------------------------------------------------------------------------------
+function seg(sel, key, attr, after) {
+  $(sel).addEventListener("click", ev => { const b = ev.target.closest("button"); if (!b) return;
+    state[key] = b.dataset[attr]; [...$(sel).children].forEach(x => x.setAttribute("aria-pressed", x === b ? "true" : "false")); after(); });
+}
+seg("#filter", "filter", "f", blocks);
+seg("#speed-mode", "mode", "m", () => { if (D) { state.table ? tables() : chartSpeed(); } });
+seg("#ideas-mode", "ideas", "m", () => { if (D) { state.table ? tables() : strategies(); } });
+$("#sort").addEventListener("change", ev => { state.sort = ev.target.value; blocks(); });
+$("#tableview").addEventListener("change", ev => { state.table = ev.target.checked; render(); });
+const root = document.documentElement;
+try { const t = localStorage.getItem("theme"); if (t) root.dataset.theme = t; } catch (e) { /* storage blocked */ }
+$("#theme").addEventListener("click", () => {
+  const dark = root.dataset.theme ? root.dataset.theme === "dark" : matchMedia("(prefers-color-scheme: dark)").matches;
+  root.dataset.theme = dark ? "light" : "dark";
+  try { localStorage.setItem("theme", root.dataset.theme); } catch (e) { /* ignore */ }
+});
+let rz; addEventListener("resize", () => { clearTimeout(rz); rz = setTimeout(() => { if (D && !state.table) { chartSpeed(); chartRoof(); chartAI(); chartTrend(); } }, 120); });
+
+// ---- data: embedded snapshot, or live from dashboard.serve ------------------------------------
+async function getJSON(url) { const r = await fetch(url, { cache: "no-store" }); if (!r.ok) throw new Error(url + " " + r.status); return r.json(); }
+let lastOK = Date.now();
+async function load(run) {
+  const next = await getJSON("/api/data?run=" + encodeURIComponent(run));
+  lastOK = Date.now();
+  if (D && D.run_id === next.run_id && D.version === next.version) return;
+  D = next; state.run = run; render();
+}
+async function live() {
+  const sel = $("#run");
+  try {
+    const runs = await getJSON("/api/runs");
+    if (!runs.length) { $("#live").textContent = "no runs yet"; return; }
+    sel.replaceChildren(...runs.map(r => h("option", { value: r.id }, r.id)));
+    state.run = state.run && runs.some(r => r.id === state.run) ? state.run : runs[0].id;
+    sel.value = state.run;
+    await load(state.run);
+  } catch (e) { $("#live").textContent = "waiting for data…"; }
+  sel.addEventListener("change", () => { state.run = sel.value; D = null; load(state.run).catch(() => {}); });
+  setInterval(() => { if (!document.hidden) load(state.run).catch(() => { $("#live").textContent = "connection lost"; }); }, 8000);
+  setInterval(() => { if (D) $("#live").textContent = `live · updated ${Math.round((Date.now() - lastOK) / 1000)} s ago`; }, 1000);
+}
+if (STATIC) {
+  $("#run").replaceChildren(h("option", { value: D.run_id }, D.run_id));
+  $("#live").textContent = "snapshot " + new Date(D.generated_at * 1000).toLocaleString();
+  render();
+} else {
+  live();
+}
+})();
+</script>
+</body>
+</html>
