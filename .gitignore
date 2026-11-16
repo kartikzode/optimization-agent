@@ -4,3 +4,28 @@
 *.ptx
 *.cubin
 *.fatbin
+
+# agent runs
+workspace/*
+!workspace/README.md
+__pycache__/
+*.pyc
+
+# secrets
+.env
+.env.*
+!.env.example
+
+.venv/
+
+# knowledge base: extracted text is derived (rebuild with ./optk kb ingest)
+knowledge/.cache/
+
+# local build output
+*.o
+*.ncu-rep
+.compile.log
+
+# downloaded reference pages / PDFs are third-party content: re-fetch with knowledge/fetch_core.sh (remove these two lines to commit your own PDFs)
+knowledge/docs/
+knowledge/pdfs/
