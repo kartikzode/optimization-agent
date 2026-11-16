@@ -11,6 +11,8 @@
   status                     baseline, best, leaderboard, recent iterations
   show N                     the brief of one iteration          compare A B   latency + profile diff
   ncu N [--kernel R] [--section S] [--advice]   the Nsight Compute report as terminal text
+  where                      what is running / STUCK / waiting on you (global event log)      events   the raw log
+  note "text" [--kind K] [--cand N..]   record your understanding in NOTES.md      notes   print them
   brief N                    regenerate a brief from stored data (no GPU)
   best                       path of the fastest correct kernel  journal       the run's running log
   kb ...                     knowledge base (PDFs and docs): ingest, search, read, add
@@ -19,11 +21,13 @@ import argparse
 import datetime as dt
 import json
 import logging
+import os
 import shutil
 import sys
+import time
 from pathlib import Path
 
-from . import brief, compile as cc, config, pipeline, problems, roofline
+from . import brief, compile as cc, config, events, pipeline, problems, roofline
 from . import log as logsetup
 from .store import Store, collect_files
 
@@ -270,6 +274,9 @@ def cmd_status(a) -> int:
         par = f"<-#{c.parent_id}" if c.parent_id else "     "
         print(f"  #{c.id:<3} {par:<6} {lat:>10} {sp:>6}  {c.worker or '-':<10} {(c.strategy or c.kind)[:28]:<28} "
               f"{' '.join(c.hypothesis.split())[:70]}")
+    recent = store.notes(3)
+    if recent:
+        print("\nlatest notes (./optk notes for all):\n" + "\n\n".join(recent))
     if (store.dir / "JOURNAL.md").exists():
         print(f"\njournal: {store.dir / 'JOURNAL.md'}")
     return 0
@@ -282,6 +289,73 @@ def cmd_show(a) -> int:
     if not p.exists():
         raise SystemExit(f"#{a.id} has no brief yet (still running? see ./optk status)")
     print(p.read_text())
+    return 0
+
+
+def cmd_where(a) -> int:
+    """What is running, what is stuck, who is waiting on you: read from the global event log."""
+    now = time.time()
+    evs = events.read(since=now - a.hours * 3600)
+    if not evs:
+        print(f"no events in the last {a.hours:g} h ({events.LOG}). Hooks log tool calls once a NEW claude session has started in this repo;\n"
+              "./optk commands log themselves.")
+        return 0
+    info = events.analyze(evs, now, stall_s=a.stall_min * 60)
+    print(f"{events.LOG}: {len(evs)} events in the last {a.hours:g} h; last activity {events.fmt_age(now - info['last_ts'])} ago")
+    ops = [o for o in info["open"] if not str(o.get("name", "")).startswith("permission prompt")]
+    perms = [o for o in info["open"] if str(o.get("name", "")).startswith("permission prompt")]
+    print("\nIN FLIGHT (started, no end yet):" if ops else "\nIN FLIGHT: nothing")
+    for o in ops:
+        mark = {"dead": "!! DEAD   ", "stalled": "!! STALLED", "running": "   running"}[o["verdict"]]
+        who = events.actor_of(o)
+        line = f"  {mark} {events.fmt_age(o['age']):>7}  [{who or '-'}] {o.get('name', '')} {o.get('detail') or o.get('argv', '')}"[:200]
+        print(line)
+        if o.get("phase"):
+            print(f"{'':14}phase: {o['phase']}" + (f"   (last heartbeat {events.fmt_age(o['quiet'])} ago)" if o.get("src") == "optk" else ""))
+        if o["verdict"] == "dead":
+            print(f"{'':14}the process (pid {o.get('pid')}) is gone without writing an end: it crashed or was killed")
+    if perms or info["waiting"]:
+        print("\nWAITING ON YOU (a permission prompt or notification with nothing after it):")
+        for r in perms:
+            print(f"  !! {events.fmt_age(r['age'])} [{events.actor_of(r) or '-'}] {r.get('name')} {r.get('detail', '')}"[:200])
+        for r in info["waiting"]:
+            if r.get("kind") == "notification":
+                print(f"  !! {r['t']} [{events.actor_of(r) or '-'}] {r.get('message', '')}")
+    if info["agents"]:
+        print("\nAGENTS (last activity):")
+        for name, d in sorted(info["agents"].items(), key=lambda kv: -kv[1]["last_ts"]):
+            print(f"  {name:<28} {events.fmt_age(now - d['last_ts']):>7} ago  {'(finished) ' if d['stopped'] else ''}{d['last']}"[:200])
+    print(f"\nlast {a.n} events:")
+    for r in evs[-a.n:]:
+        print("  " + events.format_event(r)[:220])
+    stalled = [o for o in ops if o["verdict"] != "running"]
+    print("\nVERDICT: ", end="")
+    if perms:
+        r = perms[0]
+        print(f"a {r.get('name')} has been waiting {events.fmt_age(r['age'])} for your approval: that stalls the agent until you answer.")
+    elif stalled:
+        o = stalled[0]
+        print(f"{o['verdict'].upper()}: {o.get('name')} {o.get('detail') or o.get('argv', '')} ({events.fmt_age(o['age'])}), phase '{o.get('phase') or 'unknown'}'.")
+    elif ops:
+        print(f"{len(ops)} operation(s) running normally; oldest {events.fmt_age(ops[0]['age'])}.")
+    elif now - info["last_ts"] > 300:
+        print(f"nothing in flight and quiet for {events.fmt_age(now - info['last_ts'])}: the orchestrator is idle, finished, or waiting for you at its prompt.")
+    else:
+        print("nothing in flight right now.")
+    return 0
+
+
+def cmd_events(a) -> int:
+    now = time.time()
+    evs = events.read(since=now - a.hours * 3600)
+    if a.actor:
+        evs = [r for r in evs if a.actor in (events.actor_of(r) or "")]
+    if a.kind:
+        evs = [r for r in evs if a.kind in r.get("kind", "") or a.kind in str(r.get("name", ""))]
+    if a.open:
+        evs = events.analyze(evs, now)["open"]
+    for r in evs[-a.n:]:
+        print(events.format_event(r)[:260])
     return 0
 
 
@@ -305,6 +379,25 @@ def cmd_ncu(a) -> int:
             raise SystemExit(f"ncu --import failed: {r.stderr[-300:]}")
         txt.write_text(r.stdout)
     print(ncu_text.render(txt.read_text(), kernel=a.kernel, section=a.section, advice_only=a.advice, max_lines=a.max_lines))
+    return 0
+
+
+def cmd_note(a) -> int:
+    problem = pick_problem(a.problem)
+    store = open_store(problem, a.run)
+    text = " ".join(a.text).strip()
+    if not text:
+        raise SystemExit("give the note text: ./optk note \"what you understood and why\" [--cand 3 5] [--kind insight]")
+    print(store.add_note(a.kind, text, a.cand))
+    print(f"saved to {store.dir / 'NOTES.md'}")
+    return 0
+
+
+def cmd_notes(a) -> int:
+    problem = pick_problem(a.problem)
+    store = open_store(problem, a.run)
+    notes = store.notes(a.n)
+    print("\n\n".join(notes) if notes else "(no notes yet: ./optk note \"...\")")
     return 0
 
 
@@ -448,6 +541,30 @@ def build_parser() -> argparse.ArgumentParser:
         if name == "journal":
             p.add_argument("-n", type=int, default=6)
         p.set_defaults(fn=fn)
+    p = sub.add_parser("note", help="record what you understood (insight / decision / dead-end) in the run's NOTES.md")
+    common(p)
+    p.add_argument("text", nargs="*")
+    p.add_argument("--kind", default="insight", choices=["insight", "decision", "hypothesis", "dead-end", "question", "plan"])
+    p.add_argument("--cand", type=int, nargs="*", help="iterations this note is about")
+    p.set_defaults(fn=cmd_note)
+    p = sub.add_parser("notes", help="print the run's notes")
+    common(p)
+    p.add_argument("-n", type=int, default=10)
+    p.set_defaults(fn=cmd_notes)
+
+    p = sub.add_parser("where", help="what is running / stuck / waiting on you, from the global event log (workspace/events.jsonl)")
+    p.add_argument("-n", type=int, default=12, help="how many recent events to show")
+    p.add_argument("--hours", type=float, default=6)
+    p.add_argument("--stall-min", type=float, default=10, help="a tool call older than this is called stalled")
+    p.set_defaults(fn=cmd_where)
+    p = sub.add_parser("events", help="print the event log (filters: --actor, --kind, --open)")
+    p.add_argument("-n", type=int, default=40)
+    p.add_argument("--hours", type=float, default=6)
+    p.add_argument("--actor")
+    p.add_argument("--kind")
+    p.add_argument("--open", action="store_true", help="only operations without an end")
+    p.set_defaults(fn=cmd_events)
+
     p = sub.add_parser("ncu", help="print the Nsight Compute report as text (kernel/section filters, --advice for NVIDIA's rules)")
     common(p)
     p.add_argument("id", type=int)
@@ -474,7 +591,19 @@ def main(argv=None) -> int:
     # only our own loggers get DEBUG: root-level DEBUG makes Modal's gRPC client log request headers (with the token)
     if not logging.getLogger("optagent").handlers:
         logsetup.setup(None, getattr(a, "verbose", False))
-    return a.fn(a) or 0
+    if a.cmd in ("where", "events"):          # the diagnosis commands do not log themselves
+        return a.fn(a) or 0
+    actor = os.environ.get("OPTK_ACTOR", "")
+    if not actor and getattr(a, "dir", None):
+        try:
+            actor = read_meta(Path(a.dir)).get("worker", "")
+        except Exception:
+            actor = ""
+    cli_args = " ".join(argv if argv is not None else sys.argv[1:])
+    with events.span(f"optk {a.cmd}", argv=cli_args[:300], actor=actor, problem=getattr(a, "problem", None)):
+        rc = a.fn(a) or 0
+        events.set_phase(None, f"finished rc={rc}")
+    return rc
 
 
 if __name__ == "__main__":

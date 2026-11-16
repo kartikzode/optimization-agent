@@ -11,7 +11,7 @@ import json
 import logging
 import time
 
-from . import brief, problems, roofline
+from . import brief, events, problems, roofline
 from .precheck import precheck
 from .store import Candidate, Store
 from harness import ncu as ncu_mod
@@ -33,6 +33,7 @@ def _run_remote(evaluator_factory, problem, files, *, retries=3, log=print, **kw
         except Exception as e:      # noqa: BLE001  Modal raises many types; all of them mean "not the candidate's fault"
             last = e
             L.exception("modal run failed (attempt %d/%d)", attempt + 1, retries)
+            events.emit("modal_error", attempt=attempt + 1, of=retries, err=f"{type(e).__name__}: {str(e)[:200]}")
             log(f"  [modal] run failed ({type(e).__name__}: {str(e)[:150]}); " + ("retrying" if attempt + 1 < retries else "giving up"))
             time.sleep(5 * (attempt + 1))
     raise InfraError(f"{type(last).__name__}: {last}") from last
@@ -70,6 +71,7 @@ def submit(store: Store, problem: str, files: dict[str, str], *, evaluator_facto
     cand = store.reserve(kind=kind, parent_id=parent_id, worker=worker, strategy=strategy, hypothesis=hypothesis)
     store.save_kernel(cand.id, files)
     log(f"#{cand.id}: precheck ...")
+    events.set_phase(None, f"#{cand.id} precheck (python, guard, local nvcc)")
 
     def done(status, **kw) -> Candidate:
         c = store.finish(cand.id, status=status, wall_s=time.time() - t0, **kw)
@@ -92,12 +94,15 @@ def submit(store: Store, problem: str, files: dict[str, str], *, evaluator_facto
         return done("rejected", error="\n".join(pre["errors"]), result={"precheck": pre})
 
     log(f"#{cand.id}: running on Modal ({gpu}): test -> benchmark" + (" -> ncu" if profile else ""))
+    events.set_phase(None, f"#{cand.id} WAITING on Modal {gpu}: test -> benchmark" + (" -> ncu" if profile else "")
+                     + " (one container call; see the Modal dashboard / rerun with -v for container logs)")
     try:
         out = _run_remote(evaluator_factory, problem, files, log=log, profile=profile, shape=shape, ncu_set=ncu_set,
                           launch_count=launch_count, kernel_regex=kernel_regex)
     except InfraError as e:
         return done("infra", error=str(e), result={"precheck": pre})
 
+    events.set_phase(None, f"#{cand.id} Modal returned; saving logs, profile, brief")
     for name, text in out["logs"].items():
         store.write_log(cand.id, name, text)
     if out.get("gpu_info"):
@@ -178,6 +183,7 @@ def reprofile(store: Store, problem: str, cand: Candidate, *, evaluator_factory,
     if not cand.ok:
         raise SystemExit(f"#{cand.id} did not pass ({cand.status}); only correct candidates are profiled")
     files = store.files(cand.id)
+    events.set_phase(None, f"#{cand.id} WAITING on Modal: Nsight Compute re-profile")
     log(f"#{cand.id}: profiling on Modal ({gpu}), shape={shape}, set={ncu_set}" + (f", kernels ~ /{kernel_regex}/" if kernel_regex else ""))
     out = _run_remote(evaluator_factory, problem, files, log=log, profile=True, profile_only=True, shape=shape,
                       ncu_set=ncu_set, launch_count=launch_count, kernel_regex=kernel_regex)

@@ -44,6 +44,8 @@ Working alone (no sub-agents) is fine for small steps: you then do all three rol
                                                re-profile a correct candidate (another shape, one kernel, more launches)
     ./optk status [-n 10]                      baseline, best (+ % of roofline), leaderboard, running, recent iterations
     ./optk show N | compare A B | best | journal [-n 6]
+    ./optk note "why X happened" [--kind insight|decision|dead-end|plan|question] [--cand 3 5]    ./optk notes [-n 10]
+                                               the orchestrator's memory of what it UNDERSTOOD (NOTES.md in the run; shown by `status`)
     ./optk ncu N [--advice] [--kernel REGEX] [--section REGEX]   the Nsight Compute report as TERMINAL TEXT (no GUI); --advice = NVIDIA's own
                                                OPT/WRN analysis messages per kernel ("limited by registers", "uncoalesced accesses", ...)
     ./optk kb search "query" | read SLUG --pages 3-5 | add FILE_OR_URL | list     knowledge base
@@ -58,14 +60,30 @@ Working alone (no sub-agents) is fine for small steps: you then do all three rol
 2. **Assign** distinct hypotheses, one per worker: parent candidate, the change, the reason, the expected profiler signature.
 3. **Write + compile** (worker): `new-kernel`, edit `.cu`, `compile` until clean (read ptxas: spills, regs, smem), reason about correctness, fill `candidate.json`.
 4. **Run** (runner): `submit DIR`. Test gate -> benchmark -> ncu only if correct. Report back.
-5. **Learn** (orchestrator): read the brief's "Nsight Compute's own analysis" and, for the dominant kernel, `./optk ncu N --advice --kernel <name>`; compare with the parent, read "what changed", decide keep / drop / repair / next. If a result teaches something general, **add it to the playbook below**.
+5. **Learn** (orchestrator): **write down what you understood** with `./optk note` (one to three sentences per iteration or round: why it
+   worked or not, what the profile showed, the decision and its reason, dead ends). This is what survives context compaction and what the next
+   round starts from; `JOURNAL.md` only has the facts. Then read the brief's "Nsight Compute's own analysis" and, for the dominant kernel, `./optk ncu N --advice --kernel <name>`; compare with the parent, read "what changed", decide keep / drop / repair / next. If a result teaches something general, **add it to the playbook below**.
 
 Failure handling: `rejected` = guard/compile (fix and resubmit with `--repair`); `fail` = wrong output (the log shows mismatches; check indexing, bounds, races, accumulation); `crash` = exception or CUDA error (traceback in the log; `compute-sanitizer` ideas in the KB); `timeout` = deadlock or far too slow; `infra` = Modal trouble, not the kernel's fault.
+
+## When something stalls: `./optk where`
+
+Everything that can hang is logged automatically (agents do not have to remember to log) to ONE file, `workspace/events.jsonl`:
+- every `./optk` command: start, a **heartbeat every 60 s with the phase it is in** (e.g. `#7 WAITING on Modal H100: test -> benchmark -> ncu`), end with status and duration;
+- every tool call of every agent (orchestrator, workers, runner) via Claude Code hooks (`.claude/settings.json` -> `agent/hooklog.py`), plus **permission prompts**,
+  notifications, sub-agent start/stop and failed/denied tools.
+
+An operation with a start and no end is *in flight*. `./optk where` pairs them up and says what is stuck: **STALLED** (no heartbeat / tool call far too long),
+**DEAD** (the optk process is gone without an end: crashed or killed), **WAITING ON YOU** (a permission prompt nobody answered: the usual reason an unattended agent freezes),
+plus per-agent last activity, the last events, and a one-line VERDICT. `./optk events [--actor X] [--kind K] [--open] [-n 60]` prints the raw log.
+If a run seems stuck, run `./optk where` first; if the in-flight op is a Modal call, the Modal dashboard (or rerunning with `-v`) shows the container side.
+Hooks only log sessions started after `.claude/settings.json` existed (a new `claude` session picks them up).
 
 ## Where everything is saved
 
     workspace/runs/<run>/                       one run per problem (default run = problem name)
-      store.db  JOURNAL.md  best/  scratch/<worker>/  agent.log
+      (global, not per run: workspace/events.jsonl, the stall/diagnosis log)
+      store.db  JOURNAL.md (facts, automatic)  NOTES.md (understanding, written by you)  best/  scratch/<worker>/  agent.log
       candidates/<id>/
         kernel/            the exact files that were evaluated
         brief.md           what was tried, latency table, profiler summary, what changed vs parent, links to logs

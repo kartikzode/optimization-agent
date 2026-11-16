@@ -35,6 +35,7 @@ Claude Code is the optimizer; in multi-agent mode a Fable 5.2 orchestrator direc
     claude --model claude-fable-5-2             # then:  /optimize moe 3 3     (3 rounds, 3 workers per round)
     .venv/bin/python -m dashboard.serve         # live dashboard at http://127.0.0.1:8765
     ./optk status                               # where things stand, from the terminal
+    ./optk where                                # what is running / STUCK / waiting on you (global event log)
     ./optk ncu 3 --advice                       # Nsight Compute report as terminal text, with NVIDIA's own analysis
     .venv/bin/python -m pytest tests -q
 

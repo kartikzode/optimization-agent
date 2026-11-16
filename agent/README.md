@@ -13,6 +13,7 @@ It never runs kernels itself: it talks to `harness/`, and writes only under `wor
     roofline.py   hardware peaks, shape labels, achieved-vs-roof points (shared by briefs and the dashboard)
     problems.py   problem registry, cost-model loader (problems/<p>/cost.py), scaffolding for new problems
     kb.py         knowledge base: ingest PDFs/docs, BM25 search, read pages, add by file or URL
+    events.py     global event log (workspace/events.jsonl): spans, heartbeats, stall analysis;  hooklog.py  Claude Code hooks -> events
     config.py     paths and GPU settings (.env)        log.py   console vs agent.log logging
     godbolt.py    Compiler Explorer client (opt-in; sends source to godbolt.org)
 

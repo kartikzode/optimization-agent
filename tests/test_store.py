@@ -91,3 +91,14 @@ def test_collect_files_rules(tmp_path):
     (d / "submission.py").unlink()
     with pytest.raises(ValueError, match="submission.py"):
         collect_files(d)
+
+
+def test_notes_are_appended_with_kind_and_references_and_read_back(tmp_path):
+    s = Store(tmp_path / "run")
+    assert s.notes() == []
+    s.add_note("insight", "host-bound: init dominates", [1])
+    s.add_note("decision", "next: sort tokens by expert\nthen grouped GEMM", [2, 3])
+    notes = s.notes()
+    assert len(notes) == 2 and "[insight] (#1)" in notes[0] and "host-bound" in notes[0]
+    assert "[decision] (#2, #3)" in notes[1] and "grouped GEMM" in notes[1]
+    assert s.notes(1) == [notes[1]]

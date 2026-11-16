@@ -178,6 +178,22 @@ class Store:
         with open(self.dir / "JOURNAL.md", "a", encoding="utf-8") as f:    # one write: safe for parallel submitters
             f.write(text.rstrip() + "\n\n")
 
+    def add_note(self, kind: str, text: str, cands: list[int] | None = None) -> str:
+        """The orchestrator's own understanding (insight, decision, dead-end, ...), appended to NOTES.md with a timestamp."""
+        stamp = time.strftime("%Y-%m-%d %H:%M")
+        refs = f" ({', '.join('#%d' % c for c in cands)})" if cands else ""
+        entry = f"### {stamp} [{kind}]{refs}\n{text.strip()}"
+        with open(self.dir / "NOTES.md", "a", encoding="utf-8") as f:
+            f.write(entry + "\n\n")
+        return entry
+
+    def notes(self, n: int | None = None) -> list[str]:
+        p = self.dir / "NOTES.md"
+        if not p.exists():
+            return []
+        parts = ["### " + b.strip() for b in p.read_text().split("### ") if b.strip()]
+        return parts[-n:] if n else parts
+
     def _mirror(self, c: Candidate):
         d = self.cand_dir(c.id)
         d.mkdir(parents=True, exist_ok=True)

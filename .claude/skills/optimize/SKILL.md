@@ -14,7 +14,7 @@ Read `CLAUDE.md` first if you have not this session: rules, commands, how to rea
 3. Read `problems/<p>/notes.md`, `hints.md`, `reference.py`, `task.yml`, `cost.py`. Open the dashboard if the user wants it: `.venv/bin/python -m dashboard.serve`.
 
 ## 1. Each round
-**Diagnose.** `./optk status`, `./optk journal`, the brief of the best and of the last few iterations. State in two or three sentences: where the time goes (top kernel, bound, measured vs algorithmic arithmetic intensity, % of roof), and the biggest gap to close. Search the knowledge base (`./optk kb search`) when a decision depends on hardware detail.
+**Diagnose.** `./optk status` (shows the latest notes), `./optk notes`, `./optk journal`, the brief of the best and of the last few iterations. State in two or three sentences: where the time goes (top kernel, bound, measured vs algorithmic arithmetic intensity, % of roof), and the biggest gap to close. Search the knowledge base (`./optk kb search`) when a decision depends on hardware detail.
 
 **Plan** `workers` experiments. Each is ONE hypothesis: parent candidate, the change, why it should help, and the profiler signature you expect (e.g. "DRAM bytes down ~30%, SM% up"). Make them *different* (not three tile sizes of one idea) unless an idea is clearly dominant; vary risk (one safe step, one bold). Never assign the same scratch name twice.
 
@@ -30,11 +30,15 @@ Keep each worker's agent id: you need it to reply.
 **Failures.** For a `rejected`/`fail`/`crash`/`timeout` candidate, send the runner's verbatim error and log path back to *its* worker (`SendMessage`) for a repair: at most 2 repair rounds per candidate; a repair is submitted with `--repair`. If a failure shows the hypothesis is wrong, drop it and record why.
 
 **Learn.** For every finished candidate compare with its parent (`./optk compare A B`, the brief's "what changed" section). Decide: keep (new parent), drop, or follow up. Be honest about noise: a gain smaller than the reported std is not a gain.
+- **Record your understanding** before moving on: `./optk note "..." --kind insight|decision|dead-end --cand <ids>` (why the result happened, what the profile implies, why you chose the next step). Also note the plan at the start of each round (`--kind plan`). After a context compaction, `./optk notes` + `./optk status` are how you recover your own reasoning.
 - If something general was learned, **edit `CLAUDE.md`'s playbook now**: *Verified here* (measured win, with the iteration), *Refuted / pitfalls* (with evidence). Update `problems/<p>/notes.md` with problem-specific findings.
 - One short status message to the user per round: best latency and speedup, % of roofline, what was tried, what is next.
 
 ## 2. Stopping
 Stop when the rounds are used, **or** three consecutive rounds produce no improvement over the best, **or** the best kernel is within ~10% of its roof (tensor-pipe near its limit, measured AI near the algorithmic value), **or** the user says stop. Finish with: `./optk status`, the best kernel's path (`./optk best`), a summary of what worked and what did not, and the CLAUDE.md entries you added.
+
+## If something seems stuck
+Do not guess and do not re-submit. Run `./optk where`: it lists what is in flight with its age and phase, flags STALLED / DEAD operations and any permission prompt waiting for the user, and names the likely culprit. A runner or worker that has been silent for several minutes while `where` shows a healthy heartbeat is just waiting on Modal; a `DEAD` op or a pending permission prompt needs action (tell the user). Everything agents do is logged to `workspace/events.jsonl` automatically.
 
 ## Orchestration rules
 - Workers write code and reason about correctness; the runner runs; you decide. Do not do their jobs in your own context: delegate, and read only their reports and the briefs.
