@@ -9,18 +9,17 @@ Claude Code is the optimizer. The repo runs candidates on the GPU, profiles them
 
 | role | model | job |
 |---|---|---|
-| **orchestrator** | the main session; run it on **Fable 5.2** (`claude --model claude-fable-5-2`) | reads results, diagnoses the bottleneck, decides the next experiments, assigns one idea per worker, answers worker questions, keeps this file's tricks section current |
-| **kernel-worker** (several, parallel) | Sonnet 5.5 (`.claude/agents/kernel-worker.md`) | writes one CUDA candidate, reasons about correctness, compiles until clean, asks the orchestrator when stuck, hands over `READY: <dir>` |
-| **modal-runner** | Sonnet 5.5 (`.claude/agents/modal-runner.md`) | `./optk submit`s ready candidates, returns latency + profiler facts + log paths |
+| **orchestrator** | the main session; **Sonnet 5.5** for now (`claude --model claude-sonnet-5-5`), Fable 5.2 when available | reads results, diagnoses the bottleneck, decides the next experiments, assigns one idea per worker, answers worker questions, keeps this file's tricks section current |
+| **kernel-worker** (several, parallel) | Sonnet 5.5 (`.claude/agents/kernel-worker.md`) | writes one CUDA candidate, reasons about correctness, compiles until clean (local nvcc, then the Modal CPU build), asks the orchestrator when stuck, hands over `READY: <dir>`; fixes runtime failures when resumed |
 
 Sub-agents cannot spawn sub-agents, so the **orchestrator must be the main session**. Back-and-forth works like this: a worker
 ends with `QUESTION: ...`; the orchestrator answers with `SendMessage` to that worker (which resumes it with its context). A failed
-candidate goes back to its worker the same way, with the runner's verbatim error. Playbook: `.claude/skills/optimize/SKILL.md`.
+candidate goes back to its worker the same way, with the verbatim error from the submit report. Playbook: `.claude/skills/optimize/SKILL.md`.
 Working alone (no sub-agents) is fine for small steps: you then do all three roles; follow the same loop.
 
 ## Hard rules
 
-1. **Never edit `problems/` (the evaluator, reference, task.yml, baseline), `harness/`, `agent/`, `dashboard/` while optimizing.** `problems/` is read-only for agents (enforced in `.claude/settings.json`); the problem knowledge files live in `knowledge/problems/<p>/` (`notes.md`, `hints.md`), which you should keep current. Candidates live only in `workspace/runs/<run>/scratch/<name>/`. A tool bug is not yours to patch: report it (as the runner did for the nvcc issue) and let the maintainer fix it.
+1. **Never edit `problems/` (the evaluator, reference, task.yml, baseline), `harness/`, `agent/`, `dashboard/` while optimizing.** `problems/` is read-only for agents (enforced in `.claude/settings.json`); the problem knowledge files live in `knowledge/problems/<p>/` (`notes.md`, `hints.md`), which you should keep current. Candidates live only in `workspace/runs/<run>/scratch/<name>/`. A tool bug is not yours to patch: report it (as the runner agent did for the nvcc issue) and let the maintainer fix it.
 2. **No cheating.** The guard rejects: importing `reference`/`eval`/`utils`, subprocess/threads/files/env access, side CUDA streams, monkeypatching torch/time/sys, and in `.cu`: `cudaStreamCreate*`, host callbacks, threads, `system/popen/dlopen`, `getenv`, file I/O. Caching outputs across calls, hard-coding shapes/seeds, skipping work the reference does: all invalid, and fresh seeds expose them. A speedup that does not survive "is the same work being done?" is not a result.
 3. **CUDA is the target.** `.cu` files with a thin `submission.py` wrapper (template below). Triton/torch-only candidates are allowed for a quick experiment but the goal is hand-written CUDA.
 4. **Precision follows the reference**: tolerance is in `problems/<p>/reference.py` (`rtol/atol`). fp32 accumulation for fp16/bf16 inputs. Do not loosen anything to "win".
@@ -43,6 +42,7 @@ Working alone (no sub-agents) is fine for small steps: you then do all three rol
     ./optk profile --cand N [--shape i] [--kernel-regex R] [--launch-count K] [--ncu-set detailed|full]
                                                re-profile a correct candidate (another shape, one kernel, more launches)
     ./optk status [-n 10]                      baseline, best (+ % of roofline), leaderboard, running, recent iterations
+    ./optk continue [--start --max-hours H --max-gpu-hours G | --stop | --clear]   continuous mode: go/stop before each round, plateau mode, kill switch
     ./optk show N | compare A B | best | journal [-n 6]
     ./optk note "why X happened" [--kind insight|decision|dead-end|plan|question] [--cand 3 5]    ./optk notes [-n 10]
                                                the orchestrator's memory of what it UNDERSTOOD (NOTES.md in the run; shown by `status`)
@@ -59,7 +59,7 @@ Working alone (no sub-agents) is fine for small steps: you then do all three rol
 1. **Diagnose** (orchestrator): `./optk status`, read the last briefs (`./optk show N`) and `JOURNAL.md`. Where is the time? What does the roofline say (memory- or compute-bound, how far from the roof, is measured arithmetic intensity rising)?
 2. **Assign** distinct hypotheses, one per worker: parent candidate, the change, the reason, the expected profiler signature.
 3. **Write + compile** (worker): `new-kernel`, edit `.cu`, `compile` until clean (read ptxas: spills, regs, smem), reason about correctness, fill `candidate.json`.
-4. **Run** (runner): `submit DIR`. Test gate -> benchmark -> ncu only if correct. Report back.
+4. **Run** (orchestrator): `./optk submit DIR` as a **background** Bash job per READY candidate (parallel, one H100 each; the orchestrator decides how many). Test gate -> benchmark -> ncu only if correct. Workers never touch the GPU.
 5. **Learn** (orchestrator): **write down what you understood** with `./optk note` (one to three sentences per iteration or round: why it
    worked or not, what the profile showed, the decision and its reason, dead ends). This is what survives context compaction and what the next
    round starts from; `JOURNAL.md` only has the facts. Then read the brief's "Nsight Compute's own analysis" and, for the dominant kernel, `./optk ncu N --advice --kernel <name>`; compare with the parent, read "what changed", decide keep / drop / repair / next. If a result teaches something general, **add it to the playbook below**.
@@ -70,7 +70,7 @@ Failure handling: `rejected` = guard/compile (fix and resubmit with `--repair`);
 
 Everything that can hang is logged automatically (agents do not have to remember to log) to ONE file, `workspace/events.jsonl`:
 - every `./optk` command: start, a **heartbeat every 60 s with the phase it is in** (e.g. `#7 WAITING on Modal H100: test -> benchmark -> ncu`), end with status and duration;
-- every tool call of every agent (orchestrator, workers, runner) via Claude Code hooks (`.claude/settings.json` -> `agent/hooklog.py`), plus **permission prompts**,
+- every tool call of every agent (orchestrator, workers) via Claude Code hooks (`.claude/settings.json` -> `agent/hooklog.py`), plus **permission prompts**,
   notifications, sub-agent start/stop and failed/denied tools.
 
 An operation with a start and no end is *in flight*. `./optk where` pairs them up and says what is stuck: **STALLED** (no heartbeat / tool call far too long),
@@ -158,6 +158,13 @@ Entries are short, concrete and sourced. Do not add speculation to *Verified*.
 - [moe #2] Delete per-call setup: no `nn.Module`/`nn.Linear`/`nn.Parameter` construction, weights from `data` used directly with `x @ W`, reference loop otherwise unchanged -> 6.61 s to 7.33 ms (901x; 5.80 ms @2048, 9.27 ms @8192), ncu kernel time 9.26 ms of 9.27 ms, so the call is GPU-bound afterwards. When a brief says host-bound, this is the whole win; do it before anything else. What remains at 8192: cuBLAS GEMMs ~60% (compute-bound, 76-91% SM), gather/index_add/elementwise glue ~35% over 314 launches. (`workspace/runs/moe/candidates/0002/brief.md`)
 - [moe #3] One grouped GEMM launch instead of a per-expert loop (device-side counting sort by expert, upper-bound grid with early exit, shared expert as one more group, fused `silu(gate)*up` epilogue, per-(token, slot) output buffer + combine instead of scatter-add; `mma.sync` fp16, fp32 accumulators; no host sync) -> 314 launches to 7, seqlen 2048 from 5.80 to 3.19 ms (1.8x). The small shape (256 tokens/expert) is launch- and glue-bound under cuBLAS, so fusion pays there even with a plain `mma.sync` kernel. Passed all tests on its first GPU run. (`workspace/runs/moe/candidates/0003/brief.md`)
 
+- [moe #6] wgmma m64n64k16 (fp16, fp32 acc, 128B-swizzled smem descriptors, cp.async-fed because A is gathered) replacing mma.sync+ldmatrix in the grouped GEMM -> 6.06 to 4.45 ms (1.36x; 8192: 11.64 to 8.74 ms, beats the cuBLAS loop at 9.27), same 16 GB DRAM traffic, passed on first GPU run. When ncu says "memory-bound" but DRAM throughput is <60% and tensor pipe ~60%, change the MMA path, not the traffic. (`workspace/runs/moe/candidates/0006/brief.md`)
+- [moe #8] Super-block raster (8 row tiles per expert block, column tile slow) halves DRAM (16.1 to 7.9 GB, L2 hit 80%) but gives only ~5% latency on the mma.sync kernel (11.12 vs 11.64 ms @8192): traffic is secondary until the inner loop is fast. (`workspace/runs/moe/candidates/0008/brief.md`)
+
+- [moe #9] #6 + super-block raster -> 4.257 ms (1.05x over #6; 8192: 8.30 ms), DRAM 16 to 7.8 GB, L2 hit 79%. Gain modest since tensor pipe stays ~61%. (`workspace/runs/moe/candidates/0009/brief.md`)
+
+- [moe #18] Hopper pipeline: gather A rows into a contiguous buffer (small pre-kernel), then TMA for both A and B (SW128 tensor maps via `cudaGetDriverEntryPoint(cuTensorMapEncodeTiled)`, no dlopen), one producer thread, full/empty mbarriers, 2 consumer warpgroups with `wgmma wait_group 1`, then a 128x256 CTA tile (m64n256 as 2 x n128, 128 acc regs/thread) with `setmaxnreg` 40/232 and 4 stages -> 4.26 to 3.52 ms (1.21x; 8192: 8.30 to 6.46 ms), tensor pipe 54 to 73%, moe_gemm becomes compute-bound. Order matters: the same wide-N change gave nothing while the cp.async load path was in place (#10) and the 128x128 TMA version (#16) was 3% slower than cp.async (#9); only the combination wins. (`workspace/runs/moe/candidates/0018/brief.md`)
+
 ## Candidates (from the literature, not yet measured here)
 
 **Memory system**
@@ -193,4 +200,12 @@ Entries are short, concrete and sourced. Do not add speculation to *Verified*.
 - [moe #3] Pitfall: a 2D grid `dim3(rowTiles, colTiles)` with `rt = blockIdx.x` schedules row tiles fastest, so the CTAs running together are different row tiles (here: different experts) of one column tile and share neither A nor B. Each A tile is then re-read from HBM once per column tile: 27.7 GB of DRAM traffic (8.8x the minimum), L2 hit 42%, measured intensity 130 FLOP/B, both GEMMs memory-bound at 52-60% tensor pipe, and seqlen 8192 at 12.11 ms was slower than cuBLAS-in-a-loop (9.27 ms, #2). Signature to look for: "DRAM traffic Nx the minimum" with N close to the number of column tiles. Decide the CTA order on purpose. (`workspace/runs/moe/candidates/0003/brief.md`)
 - [moe #4] Fixing that order alone (1D grid, `rt = lin / NCT`, `ct = lin % NCT`: group -> row tile -> column tile) cut DRAM traffic 27.7 -> 16.1 GB (-42%), raised L2 hit 42 -> 60% and measured intensity 130 -> 224 FLOP/B, but latency moved 6.21 -> 6.06 ms (8192: 12.11 ± 0.74 -> 11.64 ± 0.69 ms), which is inside the noise. Lesson: ncu's "memory-bound" label on a kernel with tensor pipe ~60% and DRAM throughput well under 100% does not mean HBM is the limiter; when traffic drops 42% and time does not, the inner loop is (here `mma.sync` + `ldmatrix` at 25% occupancy; cuBLAS's wgmma kernels do the same GEMMs at 76-91% SM). Check DRAM throughput %, not only the label, before spending a round on traffic. (`workspace/runs/moe/candidates/0004/brief.md`)
 - [infra, moe #5] FIXED: any `.cu` using `wgmma` was rejected by the submit precheck because `nvcc -arch=sm_90a` (nvcc 13) also compiles a plain `compute_90` pass where ptxas rejects `wgmma.mma_async`. `agent/compile.py:local_nvcc` now passes `-gencode=arch=compute_90a,code=sm_90a`; WGMMA/TMA candidates pass the precheck. Lesson: never use the `-arch=sm_XXa` shorthand for Hopper-only code. (`workspace/runs/moe/candidates/0005/logs/precheck.json` shows the old failure.)
+- [moe #11] wgmma `wait_group 1` overlap with only 3 stages (lookahead drops to one k-tile): 4.67 ms vs 4.45 (#6), tensor pipe 56 to 51%. Do not overlap by shrinking the cp.async lookahead; need deeper stages or TMA/producer warps. (`workspace/runs/moe/candidates/0011/brief.md`)
+- [moe #10] m64n128k16 in place of two m64n64k16: 4.43 vs 4.45 ms, neutral; the load path (smem pipe 63%) is the limiter, not wgmma issue count. (`workspace/runs/moe/candidates/0010/brief.md`)
+- [moe #12] Branching around wgmma for all-padding warpgroups: 4.86 vs 4.26 ms (-14%), tensor 56 to 46%. Do not put conditionals around register-resident wgmma accumulators for small savings. (`candidates/0012`)
+- [moe #14] cp.async producer warpgroup (128 threads) + 2 consumer WGs at 1 CTA/SM: 5.44 vs 4.26 ms (-28%), tensor 40%: cp.async issue by producer threads is too slow; the producer must be TMA (#16/#18). (`candidates/0014`)
+- [moe #15] Persistent CTAs with strided (round-robin) tile assignment broke raster locality: DRAM 7.8 to 12.4 GB, 4.82 vs 4.26 ms. If persistent, give each CTA a contiguous chunk of the raster order. (`candidates/0015`)
+- [moe #17] 3 stages / 2 CTAs per SM (288 threads) on the TMA pipeline: 4.378 vs 4.382 ms, occupancy 18 to 31%: neutral. (`candidates/0017`)
+- [moe #19] 2-CTA cluster + TMA multicast of B with cross-CTA empty barriers: 13.7 ms, 3.9x slower than its parent, SM 17%. At ~160 KB smem per CTA the cluster co-scheduling/remote-arrive protocol serialises the pipeline. Avoid unless smem per CTA is small. (`candidates/0019`)
+- [moe #20] Persistent CTAs with CONTIGUOUS raster chunks per CTA: 7.77 ms (2.2x slower than #18), DRAM 8.5 to 44.9 GB. Concurrently running CTAs must be adjacent in raster order; chunking puts them far apart. Use strided assignment (#21: 3.47 ms, ~1% better than non-persistent #18, within noise). (`candidates/0020`, `candidates/0021`)
 - Add: what was tried, the evidence, and why it did not work.

@@ -1,5 +1,5 @@
 """
-`./optk <command>`: the tools Claude Code (orchestrator, workers, runner) uses. See CLAUDE.md for the workflow.
+`./optk <command>`: the tools Claude Code (orchestrator and workers) uses. See CLAUDE.md for the workflow.
 
   doctor                     check Modal credentials, local nvcc/ncu, knowledge base
   problems                   list problems and their run status
@@ -11,6 +11,7 @@
   status                     baseline, best, leaderboard, recent iterations
   show N                     the brief of one iteration          compare A B   latency + profile diff
   ncu N [--kernel R] [--section S] [--advice]   the Nsight Compute report as terminal text
+  continue [--start|--stop|--clear]   continuous-run budgets, kill switch and plateau mode (exit 1 = stop)
   where                      what is running / STUCK / waiting on you (global event log)      events   the raw log
   note "text" [--kind K] [--cand N..]   record your understanding in NOTES.md      notes   print them
   brief N                    regenerate a brief from stored data (no GPU)
@@ -27,7 +28,7 @@ import sys
 import time
 from pathlib import Path
 
-from . import brief, compile as cc, config, events, pipeline, problems, roofline
+from . import brief, budget, compile as cc, config, events, pipeline, problems, roofline
 from . import log as logsetup
 from .store import Store, collect_files
 
@@ -293,6 +294,27 @@ def cmd_show(a) -> int:
     return 0
 
 
+def cmd_continue(a) -> int:
+    """Continuous-run control for the orchestrator: exit 0 = start another round, 1 = stop."""
+    if a.stop:
+        budget.stop_file().write_text(f"stopped at {time.strftime('%Y-%m-%d %H:%M:%S')}\n")
+        print(f"created {budget.stop_file()}: the orchestrator stops before its next round (a round in flight finishes)")
+        return 0
+    if a.clear:
+        budget.stop_file().unlink(missing_ok=True)
+        print("STOP file removed")
+        return 0
+    problem = pick_problem(a.problem)
+    store = open_store(problem, a.run)
+    if a.start:
+        st = budget.start(store, a.max_hours, a.max_gpu_hours, a.patience)
+        print(f"continuous run started: up to {st['max_hours']:g} h wall clock and {st['max_gpu_hours']:g} GPU-hours; "
+              f"plateau patience {st['patience']} candidates. Kill switch: touch {budget.stop_file()}")
+    go, why = budget.check(store)
+    print(why)
+    return 0 if go else 1
+
+
 def cmd_where(a) -> int:
     """What is running, what is stuck, who is waiting on you: read from the global event log."""
     now = time.time()
@@ -553,6 +575,15 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("-n", type=int, default=10)
     p.set_defaults(fn=cmd_notes)
 
+    p = sub.add_parser("continue", help="continuous-run control: should another round start? (budgets, STOP kill switch, plateau mode)")
+    common(p)
+    p.add_argument("--start", action="store_true", help="begin a continuous run and set its budgets")
+    p.add_argument("--max-hours", type=float, default=8.0)
+    p.add_argument("--max-gpu-hours", type=float, default=4.0)
+    p.add_argument("--patience", type=int, default=6, help="candidates without a >1%% improvement before switching to explore mode")
+    p.add_argument("--stop", action="store_true", help="create workspace/STOP (the kill switch)")
+    p.add_argument("--clear", action="store_true", help="remove workspace/STOP")
+    p.set_defaults(fn=cmd_continue)
     p = sub.add_parser("where", help="what is running / stuck / waiting on you, from the global event log (workspace/events.jsonl)")
     p.add_argument("-n", type=int, default=12, help="how many recent events to show")
     p.add_argument("--hours", type=float, default=6)

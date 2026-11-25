@@ -8,16 +8,19 @@ measurements stay in code. Nothing in the repo calls an LLM.
 
 ## Roles
 
-    orchestrator (Fable 5.2, the main session)
-        diagnoses from briefs + roofline  ->  assigns ONE hypothesis per worker  ->  answers worker questions  ->  curates CLAUDE.md
-          |  Agent / SendMessage
-    kernel-worker x N (Sonnet 5.5, parallel)            modal-runner (Sonnet 5.5)
-        new-kernel -> edit .cu -> compile -> READY          submit DIR ... -> latency, profile facts, log paths
-                       |  READY: <dir>                              ^
-                       +--------------> orchestrator -------------- +
+    orchestrator (the main session: Sonnet 5.5 for now, Fable 5.2 when available)
+        diagnoses from briefs + roofline -> assigns ONE hypothesis per worker -> answers worker questions
+        -> runs `./optk submit` (background jobs, it decides how many H100s run at once) -> reads the reports -> curates CLAUDE.md
+          |  Agent / SendMessage                                  ^
+    kernel-worker x N (Sonnet 5.5, parallel)                      |  READY: <dir>  (or QUESTION / BLOCKED)
+        new-kernel -> edit .cu -> compile (local nvcc, then Modal CPU build) -> self-review -> READY
+        resumed with the verbatim error if the GPU run fails -> fix -> READY again
 
 Sub-agents cannot spawn sub-agents, so the orchestrator is the main session. A worker that needs a decision stops with
-`QUESTION:`; the orchestrator resumes it with `SendMessage`. A failed candidate goes back to its worker with the verbatim error.
+`QUESTION:`; the orchestrator resumes it with `SendMessage`. Everything checkable without a GPU (guard, syntax, nvcc, the full
+torch build, register/spill stats) is the worker's own tight loop; only the orchestrator spends GPU time. An earlier design had
+a third agent (modal-runner) that ran the submits and relayed the report. It added a hop (about 20 s per candidate on top of a
+110 s submit) and no judgement, since `submit` already prints a compact, complete report, so it was removed.
 
 ## Why a one-container pipeline
 

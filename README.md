@@ -2,7 +2,7 @@
 
 Tooling for **Claude Code to optimize CUDA kernels** on a Modal H100. The repo does not call any LLM: it is the toolbox
 (compile, run, profile), the record (every log, every Nsight Compute report, a brief per iteration) and the dashboard.
-Claude Code is the optimizer; in multi-agent mode a Fable 5.2 orchestrator directs Sonnet 5.5 kernel-writer and runner agents.
+Claude Code is the optimizer; in multi-agent mode an orchestrator (the main session: Sonnet 5.5 now, Fable 5.2 when available) directs Sonnet 5.5 kernel-worker agents and schedules their candidates on the GPU itself.
 
 **Start with [CLAUDE.md](CLAUDE.md)**: it is what the agents read (commands, rules, how to read the profiler, the tricks playbook).
 
@@ -10,7 +10,7 @@ Claude Code is the optimizer; in multi-agent mode a Fable 5.2 orchestrator direc
 
     CLAUDE.md      guide for Claude Code: workflow, rules, commands, profiler reading, living optimization playbook
     optk           the tool entry point: ./optk submit | compile | profile | status | kb ...
-    .claude/       agents/kernel-worker.md, agents/modal-runner.md (Sonnet 5.5), skills/optimize (the orchestrator playbook)
+    .claude/       agents/kernel-worker.md (Sonnet 5.5), skills/optimize (the orchestrator playbook)
     problems/      task definitions and the trusted evaluator (candidates must not edit these)
       eval.py        test / benchmark / profile driver; reports key: value lines on fd $EVAL_FD
       <name>/        reference.py, task.py, task.yml, submission.py (baseline), cost.py (roofline); read-only for agents
@@ -32,7 +32,7 @@ Claude Code is the optimizer; in multi-agent mode a Fable 5.2 orchestrator direc
 ## Use it
 
     ./optk submit --seed --problem moe          # baseline = iteration #1 (the speedup reference)
-    claude --model claude-fable-5-2             # then:  /optimize moe 3 3     (3 rounds, 3 workers per round)
+    claude --model claude-sonnet-5-5           # then:  /optimize moe 3 3     (3 rounds, 3 workers per round)
     .venv/bin/python -m dashboard.serve         # live dashboard at http://127.0.0.1:8765
     ./optk status                               # where things stand, from the terminal
     ./optk where                                # what is running / STUCK / waiting on you (global event log)
