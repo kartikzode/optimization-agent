@@ -509,7 +509,8 @@ function chartSpeed() {
 function chartRoof() {
   const box = $("#roof-viz"); box.replaceChildren();
   const P = D.peaks;
-  const pts = D.candidates.filter(c => c.roof_point).map(c => ({ c, p: c.roof_point }));
+  // only the kernels that were a new best when they ran (the baseline included): the path they trace is the progress
+  const pts = D.candidates.filter(c => c.roof_point && c.new_best).map(c => ({ c, p: c.roof_point }));
   if (!D.shapes.length || !P) {
     $("#roof-desc").textContent = ""; $("#roof-legend").replaceChildren();
     box.append(empty(P ? "No FLOP/byte model for this problem yet (problems/<name>/cost.py)." : "No hardware peaks known for " + D.gpu + " (agent/roofline.py)."));
@@ -517,8 +518,8 @@ function chartRoof() {
   }
   const bw = P.tbps, peak = P.tflops, ridge = peak / bw;
   const ai0 = algAI();
-  $("#roof-desc").textContent = `${P.label}: ${P.tflops} TFLOP/s peak, ${P.tbps} TB/s HBM. x is the measured arithmetic intensity (algorithmic FLOPs over the DRAM bytes Nsight Compute saw), y the throughput from the benchmark. Better kernels move right (more reuse, less traffic) and up; the dashed line is the intensity of an ideal-reuse kernel.`;
-  if (!pts.length) { $("#roof-legend").replaceChildren(); box.append(empty("No profiled iterations yet: the roofline appears once a correct candidate has an Nsight Compute profile.")); return; }
+  $("#roof-desc").textContent = `${P.label}: ${P.tflops} TFLOP/s peak, ${P.tbps} TB/s HBM. x is the measured arithmetic intensity (algorithmic FLOPs over the DRAM bytes Nsight Compute saw), y the throughput from the benchmark. Only new bests are plotted (the baseline, then every kernel that beat all earlier ones), in the order they happened: right means more reuse and less traffic, up means faster. The dashed line is the intensity of an ideal-reuse kernel.`;
+  if (!pts.length) { $("#roof-legend").replaceChildren(); box.append(empty("No profiled best yet: the roofline appears once a new-best candidate has an Nsight Compute profile.")); return; }
   const W = Math.max(380, box.clientWidth), H = 400, m = { l: 62, r: 22, t: 16, b: 46 };
   const xsAll = [...pts.map(q => q.p.ai), ridge, ...(ai0 ? [ai0] : [])];
   const minT = Math.min(...pts.map(q => q.p.tflops), peak / 1e3);
@@ -527,9 +528,9 @@ function chartRoof() {
   const pw = W - m.l - m.r, ph = H - m.t - m.b;
   const lx = v => m.l + (Math.log(v) - Math.log(xlo)) / (Math.log(xhi) - Math.log(xlo)) * pw;
   const ly = v => m.t + ph - (Math.log(v) - Math.log(ylo)) / (Math.log(yhi) - Math.log(ylo)) * ph;
+  const Y = p => ly(p.tflops);
   const svg = s("svg", { class: "chart", viewBox: `0 0 ${W} ${H}`, width: W, height: H, role: "img",
     "aria-label": "Roofline: achieved TFLOP/s against measured arithmetic intensity. The table view has the same data." });
-  svg.append(s("defs", null, s("marker", { id: "arr", viewBox: "0 0 10 10", refX: 9, refY: 5, markerWidth: 7, markerHeight: 7, orient: "auto-start-reverse" }, s("path", { class: "arrow", d: "M0 0L10 5L0 10Z" }))));
   for (const t of logTicks(ylo, yhi, [1]))
     svg.append(s("line", { class: "grid", x1: m.l, x2: W - m.r, y1: ly(t), y2: ly(t) }),
       s("text", { class: "tick", x: m.l - 8, y: ly(t) + 4, "text-anchor": "end" }, t >= 1 ? String(t) : String(+t.toPrecision(1))));
@@ -553,32 +554,26 @@ function chartRoof() {
       s("circle", { cx: lx(ai0), cy: ly(sh.roof_tflops), r: 3, fill: "var(--ink)" }));
   }
   const trail = pts.filter(q => q.c.new_best).sort((a, b) => a.c.id - b.c.id);
-  for (let k = 1; k < trail.length; k++) {
-    const a = trail[k - 1].p, b = trail[k].p;
-    svg.append(s("path", { class: "traj", d: `M${lx(a.ai)} ${ly(a.tflops)}L${lx(b.ai)} ${ly(b.tflops)}`, "marker-end": "url(#arr)" }));
-  }
-  for (const q of pts) if (!q.c.new_best && q.c.kind !== "seed")
-    svg.append(s("circle", { class: "dot-mute ring", cx: lx(q.p.ai), cy: ly(q.p.tflops), r: 4 }));
   const best = bestOf();
   for (const q of pts) {
-    const x = lx(q.p.ai), y = ly(q.p.tflops);
-    if (q.c.kind === "seed") svg.append(s("path", { class: "dia ring", d: `M${x} ${y - 7}L${x + 7} ${y}L${x} ${y + 7}L${x - 7} ${y}Z` }), s("text", { class: "lbl-2", x: x + 11, y: y + 4 }, "baseline"));
+    const x = lx(q.p.ai), y = Y(q.p);
+    if (q.c.kind === "seed") svg.append(s("path", { class: "dia ring", d: `M${x} ${y - 7}L${x + 7} ${y}L${x} ${y + 7}L${x - 7} ${y}Z` }), s("text", { class: "lbl-2", x: x + 11, y: y - 8 }, `baseline · ${fmtTF(q.p.tflops)} TFLOP/s`));
     else if (q.c.new_best) {
       const isBest = best && q.c.id === best.id;
       svg.append(s("circle", { class: "dot-best ring", cx: x, cy: y, r: isBest ? 7 : 5 }));
-      if (trail.length <= 8 || isBest) svg.append(s("text", { class: isBest ? "lbl-ink" : "lbl", x: x + 10, y: y - 8 }, `#${q.c.id}` + (isBest ? ` · ${fmtPct(q.p.pct_roof)} of roof` : "")));
+      if (trail.length <= 12 || isBest) svg.append(s("text", { class: isBest ? "lbl-ink" : "lbl", x: x + 10, y: y - 8 }, `#${q.c.id} · ${fmtTime(q.c.geomean_ns)}` + (isBest ? ` · ${fmtPct(q.p.pct_roof)} of roof` : "")));
     }
   }
   const hl = s("circle", { r: 11, fill: "none", stroke: "var(--ink)", "stroke-width": 1.5, visibility: "hidden" });
   const hit = s("rect", { class: "hit", x: m.l, y: m.t, width: pw, height: ph });
   const near = ev => { const r = svg.getBoundingClientRect(), k = W / r.width;
     const mx = (ev.clientX - r.left) * k, my = (ev.clientY - r.top) * k; let bp = null, bd = 30;
-    for (const q of pts) { const d = Math.hypot(lx(q.p.ai) - mx, ly(q.p.tflops) - my); if (d < bd) { bd = d; bp = q; } }
+    for (const q of pts) { const d = Math.hypot(lx(q.p.ai) - mx, Y(q.p) - my); if (d < bd) { bd = d; bp = q; } }
     return bp; };
   hit.addEventListener("pointermove", ev => {
     const q = near(ev);
     if (!q) { hl.setAttribute("visibility", "hidden"); hideTip(); return; }
-    hl.setAttribute("cx", lx(q.p.ai)); hl.setAttribute("cy", ly(q.p.tflops)); hl.setAttribute("visibility", "visible");
+    hl.setAttribute("cx", lx(q.p.ai)); hl.setAttribute("cy", Y(q.p)); hl.setAttribute("visibility", "visible");
     showTip(ev, [h("div", { class: "th" }, `#${q.c.id} ${KIND[q.c.kind] || q.c.kind} · ${D.shapes[q.p.shape].label}`),
       h("div", { class: "tv" }, fmtTF(q.p.tflops) + " TFLOP/s", h("small", null, fmtTime(q.c.benchmarks[q.p.shape].mean_ns))),
       h("div", { class: "ts" }, `intensity ${fmtAI(q.p.ai)} FLOP/B · ${fmtPct(q.p.pct_roof)} of the roof · ${fmtX(q.c.speedup)} vs baseline`)]);
@@ -589,8 +584,7 @@ function chartRoof() {
   box.append(svg);
   $("#roof-legend").replaceChildren(
     legendItem(s("path", { class: "dia", d: "M8 1L14 7L8 13L2 7Z" }), "baseline"),
-    legendItem(s("circle", { class: "dot-best", cx: 8, cy: 7, r: 5 }), "new best (arrows: trajectory)"),
-    legendItem(s("circle", { class: "dot-mute", cx: 8, cy: 7, r: 4 }), "other profiled iterations"),
+    legendItem(s("circle", { class: "dot-best", cx: 8, cy: 7, r: 5 }), "best-so-far kernel"),
     legendItem(s("line", { class: "ref", x1: 1, x2: 15, y1: 7, y2: 7 }), "ideal-reuse intensity"),
     legendItem(s("line", { class: "roof", x1: 1, x2: 15, y1: 7, y2: 7 }), "roof: min(peak, bandwidth × intensity)"));
 }
@@ -763,7 +757,7 @@ function tables() {
     return [`#${c.id}`, KIND[c.kind] || c.kind, STATUS[c.status] || c.status, fmtTime(c.geomean_ns), c.speedup ? fmtX(c.speedup) : "–",
       best ? fmtTime(best) : "–", c.worker || "–", clip(c.hypothesis, 90)]; });
   $("#speed-viz").replaceChildren(h("div", { class: "tbl-wrap" }, table(["Iteration", "Kind", "Status", "Latency", "Speedup", "Best so far", "Worker", "Hypothesis"], speedRows)));
-  const roofRows = C.filter(c => c.roof_point).map(c => [`#${c.id}`, D.shapes[c.roof_point.shape].label, fmtTF(c.roof_point.tflops), fmtAI(c.roof_point.ai), fmtPct(c.roof_point.pct_roof), fmtTime(c.geomean_ns)]);
+  const roofRows = C.filter(c => c.roof_point && c.new_best).map(c => [`#${c.id}`, D.shapes[c.roof_point.shape].label, fmtTF(c.roof_point.tflops), fmtAI(c.roof_point.ai), fmtPct(c.roof_point.pct_roof), fmtTime(c.geomean_ns)]);
   $("#roof-viz").replaceChildren(roofRows.length ? h("div", { class: "tbl-wrap" }, table(["Iteration", "Shape", "TFLOP/s", "FLOP/byte (measured)", "% of roof", "Latency"], roofRows)) : empty("No roofline data."));
   const aiRows = C.filter(c => profAI(c)).map(c => [`#${c.id}`, fmtAI(profAI(c)), c.profile.totals.dram_bytes != null ? fmtBytes(c.profile.totals.dram_bytes) : "–", c.profile.totals.kernel_launches]);
   $("#ai-viz").replaceChildren(aiRows.length ? h("div", { class: "tbl-wrap" }, table(["Iteration", "Measured FLOP/byte", "DRAM traffic", "Kernel launches"], aiRows)) : empty("No profiled iterations yet."));

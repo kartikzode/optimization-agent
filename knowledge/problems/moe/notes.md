@@ -13,3 +13,6 @@
 - Keep the router as the reference's exact torch ops (`F.linear`, `softmax`, `topk(sorted=False)`): expert selection then matches bit for bit on near-ties; it costs ~60 µs.
 - Routed tokens per expert: ~T*k/E (256 at seqlen 2048, 1024 at 8192); the shared expert is a group of all T tokens.
 - #3's launcher requires d_hidden % 128 == 0 and d_expert % 64 == 0 (true for every shape in task.yml); a general kernel needs partial column tiles.
+- Best #21 3.47 ms (2048: 1.88, 8192: 6.41; 1904x baseline, 57% of fp16 roof at 8192). Design: route (torch router + route_kernel), gather_kernel makes A rows contiguous, moe_gemm = 1 TMA producer thread + 2 consumer WGs (wgmma m64n128 x2, 128x256 tile, setmaxnreg 40/232, 4 stages 197 KB), persistent strided raster (RS=8 row tiles), combine_kernel.
+- What mattered in order: delete per-call init (#2) > grouped GEMM (#3) > wgmma (#6, 1.36x) > TMA pipeline + 128x256 tile (#18, 1.21x) > raster (#9, 1.05x). Dead ends: branching around wgmma (#12), cp.async producer WG (#14), contiguous persistent chunks (#20), clusters+multicast at 160 KB smem (#19).
+- Open: 2048 shape is weight-streaming bound (floor ~0.94 ms vs 1.88); glue kernels ~9% at 8192 (gather 4%, combine 3%).

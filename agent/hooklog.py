@@ -1,6 +1,6 @@
 """
 Claude Code hook -> events.jsonl. Wired up in .claude/settings.json for every tool call of every agent
-(orchestrator, kernel-workers, modal-runner), permission prompts, notifications and sub-agent start/stop.
+(orchestrator, kernel-workers), permission prompts, notifications and sub-agent start/stop.
 
     python -m agent.hooklog <pre|post|postfail|perm|permdenied|notify|substart|substop|stop>   (hook JSON on stdin)
 

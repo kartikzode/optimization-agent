@@ -105,3 +105,37 @@ def test_new_kernel_refuses_to_overwrite_and_from_best_needs_a_best(capsys):
 def test_problem_must_be_named_when_ambiguous_and_must_exist():
     with pytest.raises(SystemExit, match="not usable|known problems"):
         cli.pick_problem("no_such_problem")
+
+
+def test_continue_budgets_kill_switch_and_plateau_modes(capsys, monkeypatch, runs_dir, tmp_path):
+    import time
+    from agent import budget
+    monkeypatch.setattr(config, "WORKSPACE", tmp_path / "ws")
+    (tmp_path / "ws").mkdir()
+    use_fake(monkeypatch, passing_result(ms=(2000.0, 8000.0)))
+    run(capsys, "submit", "--seed", "--problem", "moe")
+    code, out = run(capsys, "continue", "--problem", "moe")
+    assert code == 1 and "no continuous run is active" in out
+    code, out = run(capsys, "continue", "--start", "--max-hours", "1", "--max-gpu-hours", "1", "--patience", "2", "--problem", "moe")
+    assert code == 0 and "CONTINUE" in out and "EXPLOIT" in out
+    # candidates that do not clear the 1% noise floor push the run into explore mode
+    store = cli.open_store("moe", None)
+    for ms in (1000.0, 998.0, 999.0, 1001.0):
+        c = store.reserve(kind="improve", parent_id=1)
+        store.finish(c.id, status="pass", geomean_ns=ms * 1e6, wall_s=10.0)
+    assert budget.plateau(store) == {"last_significant": 2, "since": 3, "best_ns": 998.0e6}
+    code, out = run(capsys, "continue", "--problem", "moe")
+    assert code == 0 and "EXPLORE" in out
+    # the kill switch stops it, clearing resumes it
+    run(capsys, "continue", "--stop")
+    code, out = run(capsys, "continue", "--problem", "moe")
+    assert code == 1 and "STOP file present" in out
+    run(capsys, "continue", "--clear")
+    assert run(capsys, "continue", "--problem", "moe")[0] == 0
+    # budgets
+    ok, why = budget.check(store, now=time.time() + 2 * 3600)
+    assert not ok and "wall-clock budget used" in why
+    st = json.loads(budget.state_file(store).read_text())
+    st["max_gpu_hours"] = 0.001
+    budget.state_file(store).write_text(json.dumps(st))
+    assert "GPU budget used" in budget.check(store)[1]
